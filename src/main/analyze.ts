@@ -185,6 +185,15 @@ function trimAround(
   }
 }
 
+/** 한 소스의 AI 추천 트림 구간(오디오 피크 기준, 빠르게 — 비전 미사용). */
+export async function suggestRegion(
+  src: SourceClip,
+  settings: ProjectSettings
+): Promise<{ inSec: number; outSec: number }> {
+  const peak = await detectClipPeak(src, false)
+  return trimAround(peak.peakSec, src.durationSec || 0, settings)
+}
+
 /** 한 소스 → 트림된 새 TimelineClip 1개. */
 async function analyzeOne(
   src: SourceClip,

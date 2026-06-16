@@ -6,7 +6,7 @@ import { saveProject, loadProject } from './project'
 import { ffmpegPath, ffprobePath, checkFfmpeg } from './ffmpeg'
 import { detectCodex, requestEdits } from './codex'
 import { allowPaths } from './mediaAccess'
-import { autoHighlight, trimClips } from './analyze'
+import { autoHighlight, trimClips, suggestRegion } from './analyze'
 import { exportMontage } from './export'
 import type { EnvStatus, Project, ProjectSettings, SourceClip, TimelineClip } from '@shared/types'
 
@@ -107,6 +107,14 @@ export function registerIpc(): void {
       return trimClips(clips, sources, settings, (done, total) => {
         if (!sender.isDestroyed()) sender.send('analyze:progress', { done, total })
       })
+    }
+  )
+
+  // 단일 소스의 AI 추천 구간(원본 트림 바의 "AI 추천 적용"용)
+  ipcMain.handle(
+    'analyze:suggest',
+    async (_e, source: SourceClip, settings: ProjectSettings) => {
+      return suggestRegion(source, settings)
     }
   )
 

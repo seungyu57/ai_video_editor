@@ -60,12 +60,14 @@ export default function App(): JSX.Element {
   const [past, setPast] = useState<TimelineClip[][]>([])
   const [future, setFuture] = useState<TimelineClip[][]>([])
   const [showSettings, setShowSettings] = useState(false)
+  const [analyzing, setAnalyzing] = useState<{ done: number; total: number } | null>(null)
+  const analyzeIdsRef = useRef<string[]>([])
   const videoRef = useRef<HTMLVideoElement | null>(null)
 
   useEffect(() => {
     window.clipreel.checkEnv().then(setEnv).catch(() => setEnv(null))
     const offA = window.clipreel.onAnalyzeProgress((p) =>
-      setStatus(`분석 중… ${p.done}/${p.total}`)
+      setAnalyzing({ done: p.done, total: p.total })
     )
     const offE = window.clipreel.onExportProgress((p) => setStatus(p.message))
     return () => {
@@ -167,8 +169,10 @@ export default function App(): JSX.Element {
     try {
       setBusy(true)
       setPending(null)
-      setStatus('분석 준비 중…')
       const existing = project.timeline.clips
+      analyzeIdsRef.current =
+        existing.length > 0 ? existing.map((c) => c.sourceId) : project.sources.map((s) => s.id)
+      setAnalyzing({ done: 0, total: analyzeIdsRef.current.length })
       if (existing.length > 0) {
         // 타임라인에 있는 클립을 그대로 두고 각자 핵심 구간으로 다듬기.
         const trimmed = await window.clipreel.analyzeTrim(
@@ -192,6 +196,7 @@ export default function App(): JSX.Element {
     } finally {
       setBusy(false)
       setStatus(null)
+      setAnalyzing(null)
     }
   }
 
@@ -358,6 +363,8 @@ export default function App(): JSX.Element {
 
   const hasClips = project.timeline.clips.length > 0
   const codexAvailable = !!env?.codexFound
+  // 현재 분석 중인 소스(좌측 빈에서 스캔 효과 표시).
+  const analyzingSourceId = analyzing ? (analyzeIdsRef.current[analyzing.done] ?? null) : null
   // pending 미리보기는 모달: 적용/되돌리기 전까지 다른 동작을 잠근다.
   const locked = busy || !!pending
 
@@ -499,6 +506,19 @@ export default function App(): JSX.Element {
       {status && <div className="banner info">{status}</div>}
       {error && <div className="banner error">오류: {error}</div>}
 
+      {analyzing && (
+        <div className="analyze-bar" role="progressbar">
+          <div
+            className="analyze-fill"
+            style={{ width: `${(analyzing.done / Math.max(1, analyzing.total)) * 100}%` }}
+          />
+          <div className="analyze-shimmer" />
+          <span className="analyze-label">
+            AI ANALYZING · {analyzing.done}/{analyzing.total}
+          </span>
+        </div>
+      )}
+
       <div className="layout">
         <div className="col-left">
           <aside className="clip-list">
@@ -516,6 +536,7 @@ export default function App(): JSX.Element {
                   key={s.id}
                   clip={s}
                   active={s.id === selectedSourceId}
+                  analyzing={s.id === analyzingSourceId}
                   onClick={() => {
                     setSelectedSourceId(s.id)
                     setSelectedClipId(null)
@@ -571,6 +592,7 @@ export default function App(): JSX.Element {
               <SourceTrimBar
                 clip={selectedClip}
                 source={sourceById.get(selectedClip.sourceId)!}
+                settings={project.settings}
                 onScrub={(sid, t) => player.showFrame(sid, t)}
                 onCommit={commitTrim}
               />
@@ -619,15 +641,19 @@ export default function App(): JSX.Element {
 function ClipRow({
   clip,
   active,
+  analyzing,
   onClick
 }: {
   clip: SourceClip
   active: boolean
+  analyzing: boolean
   onClick: () => void
 }): JSX.Element {
   return (
     <li
-      className={`clip-row${active ? ' active' : ''}${clip.error ? ' has-err' : ''}`}
+      className={`clip-row${active ? ' active' : ''}${clip.error ? ' has-err' : ''}${
+        analyzing ? ' analyzing' : ''
+      }`}
       onClick={onClick}
       draggable
       onDragStart={(e) => {

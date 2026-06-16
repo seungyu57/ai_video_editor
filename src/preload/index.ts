@@ -59,6 +59,11 @@ const api = {
     sources: SourceClip[],
     settings: ProjectSettings
   ): Promise<TimelineClip[]> => ipcRenderer.invoke('analyze:trim', clips, sources, settings),
+  analyzeSuggest: (
+    source: SourceClip,
+    settings: ProjectSettings
+  ): Promise<{ inSec: number; outSec: number }> =>
+    ipcRenderer.invoke('analyze:suggest', source, settings),
   exportRender: (project: Project): Promise<string | null> =>
     ipcRenderer.invoke('export:render', project),
 

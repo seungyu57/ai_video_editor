@@ -26,8 +26,10 @@ export function useMontagePlayer(
   const [montageTime, setMontageTime] = useState(0)
   const idxRef = useRef(0)
   const loadedSourceRef = useRef<string | null>(null)
-  const loadTokenRef = useRef(0)
-  const pendingMetaRef = useRef<(() => void) | null>(null)
+  // 메타데이터 도착 시 적용할 "최신" 목표(스크럽 중 빠른 연속 호출 대응).
+  const desiredTimeRef = useRef(0)
+  const desiredPlayRef = useRef(false)
+  const metaPendingRef = useRef(false)
   const itemsRef = useRef(items)
   itemsRef.current = items
   const totalRef = useRef(total)
@@ -41,42 +43,47 @@ export function useMontagePlayer(
     [sourceById]
   )
 
-  // 필요한 경우에만 src 교체 후 시킹.
+  // 필요한 경우에만 src 교체 후 시킹. 항상 "최신" 목표시각/재생여부를 적용.
   const loadAndSeek = useCallback(
     (sourceId: string, sourceTime: number, autoplay: boolean) => {
       const v = videoRef.current
       if (!v) return
       const url = urlOf(sourceId)
       if (!url) return
-      // 로드 토큰: 메타 도착 전에 새 로드가 시작되면 옛 콜백을 무시(코드리뷰 반영).
-      const token = ++loadTokenRef.current
-      const apply = (): void => {
-        if (token !== loadTokenRef.current) return
+      desiredTimeRef.current = sourceTime
+      desiredPlayRef.current = autoplay
+
+      const applyNow = (): void => {
         try {
-          v.currentTime = sourceTime
+          v.currentTime = desiredTimeRef.current
         } catch {
-          /* 메타 미로드 시 무시 */
+          /* 메타 미로드 — onReady 가 다시 적용 */
         }
-        if (autoplay) void v.play().catch(() => {})
+        if (desiredPlayRef.current) void v.play().catch(() => {})
       }
+      // 메타데이터 준비 시 최신 목표를 적용하는 1회 리스너(중복 등록 방지).
+      const ensurePending = (): void => {
+        if (metaPendingRef.current) return
+        metaPendingRef.current = true
+        const onReady = (): void => {
+          v.removeEventListener('loadedmetadata', onReady)
+          metaPendingRef.current = false
+          applyNow()
+        }
+        v.addEventListener('loadedmetadata', onReady)
+      }
+
       if (loadedSourceRef.current !== sourceId) {
         loadedSourceRef.current = sourceId
-        // 이전에 대기 중이던 metadata 리스너 제거(스테일 방지).
-        if (pendingMetaRef.current) {
-          v.removeEventListener('loadedmetadata', pendingMetaRef.current)
-          pendingMetaRef.current = null
-        }
         v.src = url
-        const onMeta = (): void => {
-          v.removeEventListener('loadedmetadata', onMeta)
-          pendingMetaRef.current = null
-          apply()
-        }
-        pendingMetaRef.current = onMeta
-        v.addEventListener('loadedmetadata', onMeta)
+        ensurePending()
         v.load()
+      } else if (v.readyState >= 1) {
+        // 같은 소스 + 메타 준비됨 → 즉시 시킹(스크럽 일반 경로).
+        applyNow()
       } else {
-        apply()
+        // 같은 소스지만 아직 로딩 중 → 준비되면 최신 목표 적용.
+        ensurePending()
       }
     },
     [videoRef, urlOf]
@@ -94,9 +101,14 @@ export function useMontagePlayer(
       const speed = it.clip.speed && it.clip.speed > 0 ? it.clip.speed : 1
       const sourceTime = it.clip.inSec + Math.max(0, clamped - it.start) * speed
       setMontageTime(clamped)
+      if (!autoplay) {
+        // 스크럽/클릭 탐색은 재생을 멈춘 상태로(재생 중이면 충돌 방지).
+        setPlaying(false)
+        videoRef.current?.pause()
+      }
       loadAndSeek(it.clip.sourceId, sourceTime, autoplay ?? false)
     },
-    [loadAndSeek]
+    [loadAndSeek, videoRef]
   )
 
   const play = useCallback(() => {

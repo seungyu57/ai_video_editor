@@ -64,7 +64,15 @@ export function ChatPanel({
             <div className="chat-bubble">{m.text}</div>
           </div>
         ))}
-        {busy && <div className="chat-msg assistant"><div className="chat-bubble">…</div></div>}
+        {busy && (
+          <div className="chat-msg assistant">
+            <div className="chat-bubble typing">
+              <i />
+              <i />
+              <i />
+            </div>
+          </div>
+        )}
         <div ref={endRef} />
       </div>
 

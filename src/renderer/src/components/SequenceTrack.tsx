@@ -27,6 +27,8 @@ export function SequenceTrack({
   onAddSource: (sourceId: string, toOrder: number) => void
 }): JSX.Element {
   const trackRef = useRef<HTMLDivElement | null>(null)
+  const scrubRef = useRef(false)
+  const [scrubbing, setScrubbing] = useState(false)
   const [width, setWidth] = useState(800)
   const [dropIdx, setDropIdx] = useState<number | null>(null)
 
@@ -64,6 +66,14 @@ export function SequenceTrack({
   function seekFromClientX(clientX: number): void {
     if (pps <= 0) return
     onSeek(Math.max(0, Math.min(xFromClientX(clientX) / pps, total)))
+  }
+
+  function endScrub(e: React.PointerEvent): void {
+    scrubRef.current = false
+    setScrubbing(false)
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
   }
 
   function computeDropIdx(clientX: number): number {
@@ -148,7 +158,7 @@ export function SequenceTrack({
             <div
               key={c.id}
               className={`seq-block origin-${c.origin}${c.id === selectedClipId ? ' active' : ''}${diffClass}`}
-              style={{ left, width: w }}
+              style={{ left, width: w, animationDelay: `${Math.min(i * 35, 350)}ms` }}
               title={src?.name}
               draggable
               onDragStart={(e) => {
@@ -176,7 +186,27 @@ export function SequenceTrack({
         {dropIdx !== null && <div className="seq-drop" style={{ left: dropLeft }} />}
 
         {items.length > 0 && (
-          <div className="seq-playhead" style={{ left: PAD + montageTime * pps }}>
+          <div
+            className={`seq-playhead${scrubbing ? ' scrubbing' : ''}`}
+            style={{ left: PAD + montageTime * pps }}
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              scrubRef.current = true
+              setScrubbing(true)
+              e.currentTarget.setPointerCapture(e.pointerId)
+              seekFromClientX(e.clientX)
+            }}
+            onPointerMove={(e) => {
+              if (scrubRef.current) seekFromClientX(e.clientX)
+            }}
+            onPointerUp={(e) => endScrub(e)}
+            onPointerCancel={(e) => endScrub(e)}
+            onLostPointerCapture={() => {
+              scrubRef.current = false
+              setScrubbing(false)
+            }}
+          >
+            <div className="seq-playhead-hit" />
             <div className="seq-playhead-knob" />
           </div>
         )}

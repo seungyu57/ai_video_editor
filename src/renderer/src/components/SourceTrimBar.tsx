@@ -1,21 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
-import type { SourceClip, TimelineClip } from '@shared/types'
+import type { ProjectSettings, SourceClip, TimelineClip } from '@shared/types'
 import { fmtClock } from '@shared/montage'
 
 const MIN_LEN = 0.2 // 최소 컷 길이(초)
 
 /**
- * 선택한 클립의 원본 전체를 보여주고, AI가 고른 in/out 구간을 핸들로 조절.
- * 드래그 중에는 onScrub 으로 미리보기 프레임을 이동, 놓으면 onCommit 으로 확정.
+ * 선택한 클립의 원본 전체를 보여주고, 현재 in/out 을 핸들로 조절.
+ * 별도로 AI 추천 구간을 점선 밴드로 표시하고, "AI 추천 적용" 버튼으로 그 구간만 남기도록 트림.
  */
 export function SourceTrimBar({
   clip,
   source,
+  settings,
   onScrub,
   onCommit
 }: {
   clip: TimelineClip
   source: SourceClip
+  settings: ProjectSettings
   onScrub: (sourceId: string, sourceTime: number) => void
   onCommit: (clipId: string, inSec: number, outSec: number) => void
 }): JSX.Element {
@@ -25,7 +27,7 @@ export function SourceTrimBar({
     inSec: clip.inSec,
     outSec: clip.outSec
   })
-  // 드래그 핸들러가 최신 range 를 참조하도록 ref 미러(콜백을 setState 밖에서 호출).
+  const [ai, setAi] = useState<{ inSec: number; outSec: number } | null>(null)
   const rangeRef = useRef(range)
   const dragRef = useRef<'in' | 'out' | null>(null)
 
@@ -35,6 +37,23 @@ export function SourceTrimBar({
     rangeRef.current = r
     setRange(r)
   }, [clip.id, clip.inSec, clip.outSec])
+
+  // 선택한 소스의 AI 추천 구간을 비동기로 가져와 점선 밴드로 표시.
+  useEffect(() => {
+    let cancelled = false
+    setAi(null)
+    window.clipreel
+      .analyzeSuggest(source, settings)
+      .then((r) => {
+        if (!cancelled) setAi(r)
+      })
+      .catch(() => {
+        if (!cancelled) setAi(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [source.id, settings.preRollSec, settings.postRollSec])
 
   function timeFromClientX(clientX: number): number {
     const el = barRef.current
@@ -55,7 +74,6 @@ export function SourceTrimBar({
       } else {
         next = { inSec: cur.inSec, outSec: Math.min(dur, Math.max(t, cur.inSec + MIN_LEN)) }
       }
-      // 콜백/상태갱신은 순수하게: ref 갱신 → setState(값) → 바깥에서 onScrub.
       rangeRef.current = next
       setRange(next)
       onScrub(source.id, dragRef.current === 'in' ? next.inSec : next.outSec)
@@ -79,28 +97,52 @@ export function SourceTrimBar({
 
   const inPct = (range.inSec / dur) * 100
   const outPct = (range.outSec / dur) * 100
+  const aiInPct = ai ? (ai.inSec / dur) * 100 : 0
+  const aiOutPct = ai ? (ai.outSec / dur) * 100 : 0
+  // 이미 AI 구간과 거의 동일하면 버튼 비활성.
+  const matchesAi =
+    !!ai && Math.abs(ai.inSec - range.inSec) < 0.05 && Math.abs(ai.outSec - range.outSec) < 0.05
 
   return (
     <div className="trim">
       <div className="trim-head">
         <span className="trim-title">{source.name}</span>
-        <span className="trim-stat">
-          원본 {fmtClock(dur)} · 선택 {fmtClock(range.inSec)}–{fmtClock(range.outSec)} (
-          {(range.outSec - range.inSec).toFixed(1)}s)
-        </span>
+        <div className="trim-right">
+          <span className="trim-stat">
+            원본 {fmtClock(dur)} · 선택 {fmtClock(range.inSec)}–{fmtClock(range.outSec)} (
+            {(range.outSec - range.inSec).toFixed(1)}s)
+          </span>
+          <button
+            className="trim-apply"
+            disabled={!ai || matchesAi}
+            title="이 클립을 AI 추천 구간으로 자릅니다"
+            onClick={() => ai && onCommit(clip.id, ai.inSec, ai.outSec)}
+          >
+            ✨ AI 추천 적용
+          </button>
+        </div>
       </div>
       <div
         className="trim-bar"
         ref={barRef}
         onPointerDown={(e) => {
-          // 바 클릭 시 해당 위치로 미리보기 이동
           if (e.target === barRef.current) onScrub(source.id, timeFromClientX(e.clientX))
         }}
       >
         <div className="trim-dim" style={{ left: 0, width: `${inPct}%` }} />
         <div className="trim-dim" style={{ left: `${outPct}%`, right: 0 }} />
+
+        {ai && (
+          <div
+            className="trim-ai"
+            style={{ left: `${aiInPct}%`, width: `${Math.max(0, aiOutPct - aiInPct)}%` }}
+          >
+            <span className="trim-ai-label">AI 추천</span>
+          </div>
+        )}
+
         <div className="trim-region" style={{ left: `${inPct}%`, width: `${outPct - inPct}%` }}>
-          <span className="trim-region-label">AI 추천 구간</span>
+          <span className="trim-region-label">선택 구간</span>
         </div>
         <div
           className="trim-handle in"
