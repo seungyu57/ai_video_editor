@@ -1,10 +1,19 @@
 // Electron 메인 엔트리. 윈도우 생성 + media:// 프로토콜 등록 + IPC.
 
-import { app, shell, BrowserWindow, protocol, net } from 'electron'
-import { join } from 'path'
-import { pathToFileURL } from 'url'
+import { app, shell, BrowserWindow, protocol } from 'electron'
+import { join, extname } from 'path'
+import { createReadStream, statSync } from 'fs'
+import { Readable } from 'stream'
 import { registerIpc } from './ipc'
 import { isAllowed } from './mediaAccess'
+
+const MIME: Record<string, string> = {
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/x-m4v',
+  '.mov': 'video/quicktime',
+  '.mkv': 'video/x-matroska',
+  '.webm': 'video/webm'
+}
 
 // media://<base64url(절대경로)> → 로컬 영상 스트리밍 (range 지원은 net.fetch 가 처리).
 // 원본 파일은 읽기 전용으로만 접근.
@@ -45,12 +54,45 @@ function registerMediaProtocol(): void {
     if (!isAllowed(filePath)) {
       return new Response('Forbidden', { status: 403 })
     }
-    // net.fetch 로 file:// 을 가져오면 Range 헤더(영상 탐색)를 그대로 지원.
-    const fileUrl = pathToFileURL(filePath).toString()
-    return net.fetch(fileUrl, {
-      headers: request.headers,
-      // range 요청 전달
-      method: request.method
+    // 명시적 Range 처리 → <video> 가 seekable 해짐(시킹/스크럽 정상).
+    let size: number
+    try {
+      size = statSync(filePath).size
+    } catch {
+      return new Response('Not found', { status: 404 })
+    }
+    const type = MIME[extname(filePath).toLowerCase()] ?? 'video/mp4'
+    const range = request.headers.get('Range') || request.headers.get('range')
+
+    if (range) {
+      const m = /bytes=(\d*)-(\d*)/.exec(range)
+      let start = m && m[1] ? parseInt(m[1], 10) : 0
+      let end = m && m[2] ? parseInt(m[2], 10) : size - 1
+      if (Number.isNaN(start)) start = 0
+      if (Number.isNaN(end) || end >= size) end = size - 1
+      if (start > end || start >= size) {
+        return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${size}` } })
+      }
+      const stream = createReadStream(filePath, { start, end })
+      return new Response(Readable.toWeb(stream) as unknown as ReadableStream, {
+        status: 206,
+        headers: {
+          'Content-Type': type,
+          'Content-Range': `bytes ${start}-${end}/${size}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': String(end - start + 1)
+        }
+      })
+    }
+
+    const stream = createReadStream(filePath)
+    return new Response(Readable.toWeb(stream) as unknown as ReadableStream, {
+      status: 200,
+      headers: {
+        'Content-Type': type,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': String(size)
+      }
     })
   })
 }
@@ -69,7 +111,9 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // 로컬 비디오 편집기 — 제스처 없이도 재생 허용(클립 경계 자동 전환 등).
+      autoplayPolicy: 'no-user-gesture-required'
     }
   })
 

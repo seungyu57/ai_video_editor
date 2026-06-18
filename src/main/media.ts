@@ -67,8 +67,12 @@ export async function scanFolder(folderPath: string): Promise<SourceClip[]> {
     .filter((e) => e.isFile() && VIDEO_EXT.has(extname(e.name).toLowerCase()))
     .map((e) => join(folderPath, e.name))
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  return probeFiles(files)
+}
 
-  // 순차 probe (동시 실행은 디스크 부담 + ffprobe 다중 스폰 → 적당히 직렬)
+/** 지정한 파일 경로들(영상만)을 probe 해 SourceClip[] 반환. */
+export async function probeFiles(filePaths: string[]): Promise<SourceClip[]> {
+  const files = filePaths.filter((f) => VIDEO_EXT.has(extname(f).toLowerCase()))
   const out: SourceClip[] = []
   for (const f of files) {
     out.push(await probeOne(f))
