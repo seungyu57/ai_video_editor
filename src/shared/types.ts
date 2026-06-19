@@ -95,14 +95,10 @@ export interface EnvStatus {
 }
 
 export function defaultTracks(): Track[] {
-  // 비디오 트랙마다 짝 오디오 트랙(V1↔A1, V2↔A2, V3↔A3). 영상 드롭 시 짝 트랙으로 분리.
+  // 새 작업은 V1 + A1 하나씩. 영상 드롭 시 V{n}↔A{n} 짝으로 분리(없으면 자동 생성).
   return [
-    { id: 'V3', kind: 'video', name: 'V3', index: 2, enabled: true, locked: false, muted: false, height: 64 },
-    { id: 'V2', kind: 'video', name: 'V2', index: 1, enabled: true, locked: false, muted: false, height: 64 },
     { id: 'V1', kind: 'video', name: 'V1', index: 0, enabled: true, locked: false, muted: false, height: 64 },
-    { id: 'A1', kind: 'audio', name: 'A1', index: 0, enabled: true, locked: false, muted: false, height: 48 },
-    { id: 'A2', kind: 'audio', name: 'A2', index: 1, enabled: true, locked: false, muted: false, height: 48 },
-    { id: 'A3', kind: 'audio', name: 'A3', index: 2, enabled: true, locked: false, muted: false, height: 48 }
+    { id: 'A1', kind: 'audio', name: 'A1', index: 0, enabled: true, locked: false, muted: false, height: 48 }
   ]
 }
 

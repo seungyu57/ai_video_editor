@@ -99,12 +99,19 @@ const findTrack = (s: OpState, id: string): Track | undefined => s.tracks.find((
 const findClip = (s: OpState, id: string): TimelineClip | undefined =>
   s.clips.find((c) => c.id === id)
 
-/** 소스를 trackId 위 startSec 에 새 클립으로 추가(원본 전체). */
-export function addClip(
+/**
+ * 소스의 [inSec,outSec) 구간을 trackId 위 startSec 에 새 클립으로 배치.
+ * 오디오가 있으면 짝 오디오 트랙(A{n})에 분리 배치(없으면 생성). addClip/AI 하이라이트 공용.
+ */
+export function placeClip(
   state: OpState,
   sourceId: string,
   trackId: string,
-  startSec: number
+  startSec: number,
+  inSec: number,
+  outSec: number,
+  origin: 'ai' | 'user' = 'user',
+  reasons: string[] = []
 ): OpResult {
   const track = findTrack(state, trackId)
   if (!track) return reject(state, '트랙 없음')
@@ -113,9 +120,9 @@ export function addClip(
   const src = state.sources.find((s) => s.id === sourceId)
   if (!src) return reject(state, '소스 없음')
 
-  // 원본 길이를 프레임 그리드로 내림 → clipEnd 가 그리드에 정렬.
-  const srcDur = src.durationSec || MIN_DUR
-  const outSec = Math.max(MIN_DUR, Math.floor(srcDur * state.fps) / state.fps)
+  const srcDur = Math.max(MIN_DUR, src.durationSec || MIN_DUR)
+  const i = clamp(qf(inSec, state.fps), 0, srcDur - MIN_DUR)
+  const o = clamp(qf(outSec, state.fps), i + MIN_DUR, srcDur)
   const start = Math.max(0, qf(startSec, state.fps))
   const linkId = newClipId()
   const videoClip: TimelineClip = {
@@ -123,12 +130,12 @@ export function addClip(
     sourceId,
     trackId,
     startSec: start,
-    inSec: 0,
-    outSec,
+    inSec: i,
+    outSec: o,
     speed: 1,
     linkId,
-    origin: 'user',
-    reasons: []
+    origin,
+    reasons
   }
   let clips = resolveOverwrite(state.clips, videoClip)
   const changed = [videoClip.id]
@@ -155,18 +162,75 @@ export function addClip(
         sourceId,
         trackId: audioTrack.id,
         startSec: start,
-        inSec: 0,
-        outSec,
+        inSec: i,
+        outSec: o,
         speed: 1,
         linkId,
-        origin: 'user',
-        reasons: []
+        origin,
+        reasons
       }
       clips = resolveOverwrite(clips, audioClip)
       changed.push(audioClip.id)
     }
   }
   return { clips, tracks: outTracks, changed }
+}
+
+/**
+ * 삽입 편집(Premiere 'insert'): atSec 에서 모든 트랙을 분할한 뒤, atSec 이후의 클립을
+ * 삽입 길이만큼 오른쪽으로 밀고, 소스 [inSec,outSec) 를 trackId 위 atSec 에 배치(오디오 짝 포함).
+ * 모든 트랙을 함께 미뤄 싱크를 유지한다.
+ */
+export function insertClip(
+  state: OpState,
+  sourceId: string,
+  trackId: string,
+  atSec: number,
+  inSec: number,
+  outSec: number
+): OpResult {
+  const track = findTrack(state, trackId)
+  if (!track) return reject(state, '트랙 없음')
+  if (track.locked) return reject(state, '잠긴 트랙')
+  if (track.kind !== 'video') return reject(state, '영상은 비디오 트랙에만 추가')
+  const src = state.sources.find((s) => s.id === sourceId)
+  if (!src) return reject(state, '소스 없음')
+
+  const at = Math.max(0, qf(atSec, state.fps))
+  const dur = Math.max(MIN_DUR, qf(outSec, state.fps) - qf(inSec, state.fps))
+
+  // 1) at 을 지나는 모든 트랙 클립을 분할(중간이 잘리지 않도록).
+  let cur: OpState = state
+  for (const t of state.tracks) {
+    const straddling = cur.clips.find(
+      (c) => c.trackId === t.id && c.startSec + EPS < at && at < clipEnd(c) - EPS
+    )
+    if (straddling) {
+      const r = splitAt(cur, straddling.id, at)
+      if (!r.rejected) cur = { ...cur, clips: r.clips, tracks: r.tracks }
+    }
+  }
+  // 2) at 이상에서 시작하는 모든 클립을 dur 만큼 오른쪽으로.
+  const shifted = cur.clips.map((c) =>
+    c.startSec >= at - EPS ? { ...c, startSec: qf(c.startSec + dur, state.fps) } : c
+  )
+  // 3) 비워진 자리에 배치(오디오 짝 포함).
+  return placeClip({ ...cur, clips: shifted }, sourceId, trackId, at, inSec, outSec, 'user', [])
+}
+
+/** 소스를 trackId 위 startSec 에 새 클립으로 추가(원본 전체). */
+export function addClip(
+  state: OpState,
+  sourceId: string,
+  trackId: string,
+  startSec: number
+): OpResult {
+  const src = state.sources.find((s) => s.id === sourceId)
+  if (!src) return reject(state, '소스 없음')
+  // 원본 길이를 프레임 그리드로 내림 → clipEnd 가 그리드에 정렬.
+  const srcDur = src.durationSec || MIN_DUR
+  const outSec = Math.max(MIN_DUR, Math.floor(srcDur * state.fps) / state.fps)
+  return placeClip(state, sourceId, trackId, startSec, 0, outSec, 'user', [])
 }
 
 /**

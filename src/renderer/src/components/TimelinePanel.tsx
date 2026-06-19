@@ -27,6 +27,10 @@ export interface TimelinePanelProps {
   draggingSourceId: string | null
   onSelectClip: (id: string | null, additive?: boolean) => void
   onSplitPlayhead: () => void
+  onRemoveClip: (id: string) => void
+  onRippleDeleteClip: (id: string) => void
+  onSetClipSpeed: (id: string, rate: number) => void
+  onUnlinkClip: (id: string) => void
   onLinkSelected: () => void
   onSeek: (t: number, autoplay?: boolean) => void
   onShowFrame: (sourceId: string, sourceTime: number) => void
@@ -64,7 +68,8 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
   const {
     tracks, clips, sources, fps, pxPerSec, setPxPerSec, snapEnabled,
     selectedClipIds, playheadSec, draggingSourceId,
-    onSelectClip, onSplitPlayhead, onLinkSelected, onSeek, onShowFrame, onMoveClip, onMoveClips, onTrimLeft, onTrimRight,
+    onSelectClip, onSplitPlayhead, onRemoveClip, onRippleDeleteClip, onSetClipSpeed, onUnlinkClip,
+    onLinkSelected, onSeek, onShowFrame, onMoveClip, onMoveClips, onTrimLeft, onTrimRight,
     onCloseGap, onAddSource, onToggleSnap, onAddTrack, onMoveTrack, onRemoveTrack, onReorderTrack, onSetTrackFlag
   } = props
 
@@ -77,6 +82,7 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
   const [trim, setTrim] = useState<{ id: string; left: number; right: number; snappedTo: number | null } | null>(null)
   const [dropGhost, setDropGhost] = useState<{ trackId: string; start: number; width: number } | null>(null)
   const [trackDrop, setTrackDrop] = useState<{ id: string; below: boolean } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; clip: TimelineClip } | null>(null)
 
   const total = totalDuration(clips)
   const sourceById = new Map(sources.map((s) => [s.id, s]))
@@ -147,6 +153,7 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
 
   // ── 제스처 시작 ──
   function startMove(e: React.PointerEvent, clip: TimelineClip): void {
+    if (e.button !== 0) return // 우클릭은 컨텍스트 메뉴로
     if (trackById.get(clip.trackId)?.locked) return
     e.stopPropagation()
     // 이미 다중 선택에 포함된 클립을 잡으면 선택 유지(그룹 이동). 아니면 선택(Shift=추가).
@@ -316,7 +323,7 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
     <div className="timeline-panel">
       <div className="tl-toolbar">
         <div className="tl-tools">
-          <button className="primary" onClick={onSplitPlayhead} title="재생바 위치에서 자르기 (C / Ctrl+C / Ctrl+K)">
+          <button className="primary" onClick={onSplitPlayhead} title="재생바 위치에서 자르기 (C / Ctrl+K)">
             ✂ 자르기
           </button>
           <span className="sep" />
@@ -330,7 +337,8 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
           <button onClick={fitZoom} title="맞춤">맞춤</button>
           <button onClick={() => setPxPerSec((p) => Math.min(500, p * 1.25))} title="확대(+)">＋</button>
           <span className="sep" />
-          <button onClick={() => onAddTrack('video')} title="비디오 트랙 추가">＋트랙</button>
+          <button onClick={() => onAddTrack('video')} title="비디오 트랙 추가">＋비디오</button>
+          <button onClick={() => onAddTrack('audio')} title="오디오 트랙 추가">＋오디오</button>
         </div>
       </div>
 
@@ -430,6 +438,12 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
                         className={`tl-clip${track.kind === 'audio' ? ' audio' : ''}${selected ? ' selected' : ''}${clip.origin === 'ai' ? ' ai' : ''}${isDragSource ? ' drag-source' : ''}`}
                         style={{ left: startSec * pxPerSec, width: w }}
                         onPointerDown={(e) => startMove(e, clip)}
+                        onContextMenu={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          onSelectClip(clip.id)
+                          setMenu({ x: e.clientX, y: e.clientY, clip })
+                        }}
                         title={src?.name}
                       >
                         <div className="tl-handle l" onPointerDown={(e) => startTrim(e, clip, 'in')} />
@@ -526,6 +540,36 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
           </div>
         </div>
       </div>
+
+      {menu && (
+        <>
+          <div
+            className="tl-menu-backdrop"
+            onPointerDown={() => setMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setMenu(null) }}
+          />
+          <div className="tl-menu" style={{ left: menu.x, top: menu.y }}>
+            <button onClick={() => { onRemoveClip(menu.clip.id); setMenu(null) }}>삭제</button>
+            <button onClick={() => { onRippleDeleteClip(menu.clip.id); setMenu(null) }}>리플 삭제 (뒤 당김)</button>
+            {menu.clip.linkId && (
+              <button onClick={() => { onUnlinkClip(menu.clip.id); setMenu(null) }}>링크 해제</button>
+            )}
+            <div className="tl-menu-sep" />
+            <div className="tl-menu-label">속도</div>
+            <div className="tl-menu-speeds">
+              {[0.5, 1, 1.5, 2].map((r) => (
+                <button
+                  key={r}
+                  className={menu.clip.speed === r ? 'on' : ''}
+                  onClick={() => { onSetClipSpeed(menu.clip.id, r); setMenu(null) }}
+                >
+                  {r}×
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

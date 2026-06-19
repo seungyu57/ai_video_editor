@@ -6,9 +6,19 @@ import { promisify } from 'util'
 import { scanFolder, probeFiles } from './media'
 import { saveProject, loadProject } from './project'
 import { ffmpegPath, ffprobePath, checkFfmpeg } from './ffmpeg'
-import { allowPaths } from './mediaAccess'
+import { allowPaths, isAllowed } from './mediaAccess'
 import { exportMontage } from './export'
+import { analyzeTrim, analyzeHighlights, analyzeHighlightsVision, chatEdit } from './ai'
 import type { EnvStatus, Project, SourceClip } from '@shared/types'
+import type {
+  ChatEditRequest,
+  ChatEditResult,
+  HighlightRequest,
+  HighlightSegment,
+  TrimAnalyzeItem,
+  TrimSuggestion,
+  VisionHighlightRequest
+} from '@shared/ai-edit'
 
 const execFileAsync = promisify(execFile)
 
@@ -95,6 +105,42 @@ export function registerIpc(): void {
     const project = await loadProject(res.filePaths[0])
     allowPaths(project.sources.map((s) => s.path))
     return project
+  })
+
+  // AI 트림: 선택 클립들의 앞/뒤 무음 절삭량 분석(ffmpeg, 오프라인)
+  // 보안: 앱이 실제로 불러온 원본(allowlist)만 분석 — 임의 로컬 파일 읽기 차단.
+  ipcMain.handle(
+    'ai:analyzeTrim',
+    async (_e, items: TrimAnalyzeItem[], padSec: number): Promise<TrimSuggestion[]> => {
+      const safe = items.filter((it) => isAllowed(it.sourcePath))
+      return analyzeTrim(safe, padSec)
+    }
+  )
+
+  // AI 자동 하이라이트: 소스의 소리 피크 구간 검출(ffmpeg, 오프라인) — 레거시
+  ipcMain.handle(
+    'ai:autoHighlight',
+    async (_e, req: HighlightRequest): Promise<HighlightSegment[]> => {
+      if (!isAllowed(req.sourcePath)) throw new Error('허용되지 않은 경로입니다')
+      return analyzeHighlights(req)
+    }
+  )
+
+  // AI 비전 하이라이트: codex 가 프레임을 직접 보고 하이라이트 선별(진행 이벤트 전송)
+  ipcMain.handle(
+    'ai:visionHighlights',
+    async (e, req: VisionHighlightRequest): Promise<{ segments: HighlightSegment[]; error?: string }> => {
+      if (!isAllowed(req.sourcePath)) throw new Error('허용되지 않은 경로입니다')
+      const sender = e.sender
+      return analyzeHighlightsVision(req, (p) => {
+        if (!sender.isDestroyed()) sender.send('ai:visionProgress', p)
+      })
+    }
+  )
+
+  // AI 자연어 편집: codex 로 EditOp[] 생성(미설치 시 안내 반환)
+  ipcMain.handle('ai:chatEdit', async (_e, req: ChatEditRequest): Promise<ChatEditResult> => {
+    return chatEdit(req)
   })
 
   // 내보내기: 타임라인 → 단일 mp4 (저장 경로 다이얼로그 + 진행 이벤트)

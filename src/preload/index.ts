@@ -2,6 +2,16 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { EnvStatus, Project, SourceClip } from '@shared/types'
+import type {
+  ChatEditRequest,
+  ChatEditResult,
+  HighlightRequest,
+  HighlightSegment,
+  TrimAnalyzeItem,
+  TrimSuggestion,
+  VisionHighlightRequest,
+  VisionProgress
+} from '@shared/ai-edit'
 
 export interface ExportProgressEvent {
   stage: 'segment' | 'concat' | 'done'
@@ -32,10 +42,27 @@ const api = {
   exportRender: (project: Project): Promise<string | null> =>
     ipcRenderer.invoke('export:render', project),
 
+  // AI 편집
+  analyzeTrim: (items: TrimAnalyzeItem[], padSec = 0.15): Promise<TrimSuggestion[]> =>
+    ipcRenderer.invoke('ai:analyzeTrim', items, padSec),
+  autoHighlight: (req: HighlightRequest): Promise<HighlightSegment[]> =>
+    ipcRenderer.invoke('ai:autoHighlight', req),
+  visionHighlights: (
+    req: VisionHighlightRequest
+  ): Promise<{ segments: HighlightSegment[]; error?: string }> =>
+    ipcRenderer.invoke('ai:visionHighlights', req),
+  chatEdit: (req: ChatEditRequest): Promise<ChatEditResult> =>
+    ipcRenderer.invoke('ai:chatEdit', req),
+
   onExportProgress: (cb: (p: ExportProgressEvent) => void): (() => void) => {
     const listener = (_e: unknown, p: ExportProgressEvent): void => cb(p)
     ipcRenderer.on('export:progress', listener)
     return () => ipcRenderer.removeListener('export:progress', listener)
+  },
+  onVisionProgress: (cb: (p: VisionProgress) => void): (() => void) => {
+    const listener = (_e: unknown, p: VisionProgress): void => cb(p)
+    ipcRenderer.on('ai:visionProgress', listener)
+    return () => ipcRenderer.removeListener('ai:visionProgress', listener)
   },
 
   toMediaUrl
