@@ -347,3 +347,37 @@ button.on { color: var(--accent); border-color: var(--accent-ring); background: 
 }
 .bin-item:hover .bin-del { opacity: 1; }
 .bin-del:hover { background: rgba(248, 81, 73, 0.15); color: var(--err); }
+
+/* ── 하이라이트 개수·여유 입력 ── */
+.ai-nums { display: flex; gap: 8px; }
+.ai-nums label { flex: 1; display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-dim); }
+.ai-nums input {
+  width: 100%; background: var(--l0); border: 1px solid var(--border); border-radius: 7px;
+  color: var(--text); padding: 5px 7px; font-size: 12px; font-family: inherit; font-variant-numeric: tabular-nums;
+}
+.ai-nums input:focus { outline: none; border-color: var(--accent-ring); }
+
+/* ── AI 지침 버튼 + 편집 모달 ── */
+.ai-instr-btn { margin-left: auto; padding: 4px 9px; font-size: 11px; border-radius: 7px; background: var(--l2); border: 1px solid var(--border); color: var(--text-dim); }
+.ai-instr-btn:hover { color: var(--accent); border-color: var(--accent-ring); }
+.modal-backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.modal { width: min(720px, 92vw); max-height: 86vh; display: flex; flex-direction: column; background: var(--l1); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-md); overflow: hidden; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--hairline); font-weight: 600; font-size: 13px; }
+.modal-x { width: 28px; height: 28px; padding: 0; border-radius: 7px; background: transparent; border: none; color: var(--text-dim); }
+.modal-x:hover { background: var(--l3); color: var(--text); }
+.modal-desc { margin: 0; padding: 12px 18px; font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+.modal-textarea { flex: 1; min-height: 320px; margin: 0 18px; background: var(--l0); border: 1px solid var(--border); border-radius: 10px; color: var(--text); padding: 12px; font-family: 'Consolas', ui-monospace, monospace; font-size: 12.5px; line-height: 1.6; resize: none; }
+.modal-textarea:focus { outline: none; border-color: var(--accent-ring); }
+.modal-actions { display: flex; align-items: center; gap: 8px; padding: 14px 18px; }
+.modal-spacer { flex: 1; }
+.modal-saved { color: var(--good); font-size: 12px; }
+.modal-actions button { padding: 7px 14px; border-radius: 8px; font-size: 12.5px; font-weight: 500; background: var(--l2); border: 1px solid var(--border); color: var(--text); }
+.modal-actions button.primary { background: var(--accent-grad); border: none; color: #04121a; font-weight: 700; }
+
+/* ── 지침 AI 생성 행 ── */
+.modal-gen { display: flex; gap: 8px; padding: 0 18px 6px; }
+.modal-gen-input { flex: 1; background: var(--l0); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px 10px; font-size: 12.5px; font-family: inherit; }
+.modal-gen-input:focus { outline: none; border-color: var(--accent-ring); }
+.modal-gen button { padding: 8px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 600; white-space: nowrap; background: var(--accent-grad); border: none; color: #04121a; }
+.modal-gen button:disabled { opacity: 0.45; }
+.modal-generr { padding: 0 18px 6px; font-size: 12px; color: var(--err); }

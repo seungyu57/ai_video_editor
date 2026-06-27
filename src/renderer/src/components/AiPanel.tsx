@@ -20,6 +20,11 @@ interface AiPanelProps {
   useAudio: boolean
   onUseAudioChange: (v: boolean) => void
   whisperFound: boolean
+  hlAuto: boolean
+  onHlAutoChange: (v: boolean) => void
+  hlCount: number
+  onHlCountChange: (n: number) => void
+  onEditInstructions: () => void
   onHighlight: () => void
   onChat: (text: string) => void
   onAccept: () => void
@@ -42,6 +47,11 @@ export function AiPanel(props: AiPanelProps): JSX.Element {
     useAudio,
     onUseAudioChange,
     whisperFound,
+    hlAuto,
+    onHlAutoChange,
+    hlCount,
+    onHlCountChange,
+    onEditInstructions,
     onHighlight,
     onChat,
     onAccept,
@@ -72,6 +82,9 @@ export function AiPanel(props: AiPanelProps): JSX.Element {
       <div className="ai-head">
         <span className="ai-title">🤖 AI 편집</span>
         {aiBusy && <span className="ai-spin">분석 중…</span>}
+        <button className="ai-instr-btn" onClick={onEditInstructions} title="AI 작업지시 보기·수정">
+          📋 지침
+        </button>
       </div>
 
       {(!ffmpegOk || !anyProvider) && (
@@ -123,6 +136,24 @@ export function AiPanel(props: AiPanelProps): JSX.Element {
           />
           🎙 음성(대사)도 분석
         </label>
+        <label className="ai-audio" title="끄면 하이라이트 개수를 직접 정할 수 있어요. (길이는 항상 AI가 판단)">
+          <input
+            type="checkbox"
+            checked={hlAuto}
+            disabled={disabled}
+            onChange={(e) => onHlAutoChange(e.target.checked)}
+          />
+          ✨ 개수 자동 (AI가 알아서)
+        </label>
+        {!hlAuto && (
+          <div className="ai-nums">
+            <label title="뽑을 하이라이트 개수">
+              개수
+              <input type="number" min={1} max={30} value={hlCount} disabled={disabled}
+                onChange={(e) => onHlCountChange(Math.max(1, Math.min(30, Math.round(Number(e.target.value) || 1))))} />
+            </label>
+          </div>
+        )}
         <button
           onClick={onHighlight}
           disabled={disabled || !ffmpegOk || !providerOk || !hasClips}

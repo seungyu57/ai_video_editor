@@ -8,9 +8,46 @@ import { promisify } from 'util'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join, dirname } from 'path'
+import { app } from 'electron'
 import { ffmpegCapture, runFfmpeg, ffmpegPath } from './ffmpeg'
-// AI 운영 지침(편집 전 읽는 작업지시). 빌드 시 인라인.
-import AGENT_DOC from '@shared/ai-agent.md?raw'
+// AI 운영 지침 기본값(편집 전 읽는 작업지시). 빌드 시 인라인. 사용자가 앱에서 수정하면 오버라이드.
+import AGENT_DOC_DEFAULT from '@shared/ai-agent.md?raw'
+
+// ── AI 지침(사용자 편집 가능) — 앱 데이터 폴더에 저장, 없으면 기본값 ──
+function agentDocPath(): string {
+  return join(app.getPath('userData'), 'ai-agent.md')
+}
+let _agentDoc: string | null = null
+/** 분석/편집 프롬프트에 쓸 현재 지침(사용자 저장본 우선, 캐시). */
+async function getAgentDoc(): Promise<string> {
+  if (_agentDoc != null) return _agentDoc
+  try {
+    _agentDoc = await readFile(agentDocPath(), 'utf8')
+  } catch {
+    _agentDoc = AGENT_DOC_DEFAULT
+  }
+  return _agentDoc
+}
+/** UI 표시용: 현재 지침 + 사용자 커스텀 여부 + 기본값. */
+export async function getInstructions(): Promise<{ text: string; isCustom: boolean; defaultText: string }> {
+  try {
+    const t = await readFile(agentDocPath(), 'utf8')
+    return { text: t, isCustom: true, defaultText: AGENT_DOC_DEFAULT }
+  } catch {
+    return { text: AGENT_DOC_DEFAULT, isCustom: false, defaultText: AGENT_DOC_DEFAULT }
+  }
+}
+/** 지침 저장(다음 분석부터 즉시 반영). */
+export async function saveInstructions(text: string): Promise<void> {
+  await writeFile(agentDocPath(), text, 'utf8')
+  _agentDoc = text
+}
+/** 기본값으로 복원(사용자 파일 삭제). */
+export async function resetInstructions(): Promise<string> {
+  await rm(agentDocPath(), { force: true }).catch(() => {})
+  _agentDoc = AGENT_DOC_DEFAULT
+  return AGENT_DOC_DEFAULT
+}
 
 const execFileAsync = promisify(execFile)
 import type {
@@ -224,9 +261,10 @@ const VISION_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['index', 'score', 'reason'],
+        required: ['startSec', 'endSec', 'score', 'reason'],
         properties: {
-          index: { type: 'integer' },
+          startSec: { type: 'number' },
+          endSec: { type: 'number' },
           score: { type: 'number' },
           reason: { type: 'string' }
         }
@@ -236,6 +274,7 @@ const VISION_SCHEMA = {
 } as const
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v)
+const numOr = (v: unknown, d: number): number => (Number.isFinite(Number(v)) ? Number(v) : d)
 
 // ── 음성 전사(Whisper) ──
 
@@ -417,80 +456,92 @@ async function transcribeCli(
   return []
 }
 
-/** 전사 세그먼트를 AI(텍스트)로 보내 하이라이트 순간을 고른다. */
+/** 전사 세그먼트를 AI(텍스트)로 보내 하이라이트 구간을 고른다(AI가 시작~끝 직접 판단). */
 async function analyzeTranscriptHighlights(
   provider: AiProvider,
   segments: { start: number; end: number; text: string }[],
-  dir: string
+  durationSec: number,
+  dir: string,
+  agentDoc: string
 ): Promise<{ ok: boolean; spawnError: boolean; hits: VisionHit[] }> {
   if (segments.length === 0) return { ok: true, spawnError: false, hits: [] }
-  // 인덱스=세그먼트, 시간은 중앙값.
   const lines = segments
-    .map((s, i) => `${i}=[${((s.start + s.end) / 2).toFixed(1)}초] ${s.text}`)
+    .map((s) => `[${s.start.toFixed(1)}~${s.end.toFixed(1)}초] ${s.text}`)
     .join('\n')
   const prompt = [
-    '너는 게임 영상 하이라이트 편집자다. 아래는 영상의 음성을 전사한 대사/해설이다(인덱스=[시간] 텍스트).',
+    agentDoc,
+    '',
+    '---',
+    '',
+    '아래는 영상의 음성을 전사한 대사/해설이다([시작~끝초] 텍스트).',
     lines,
     '',
-    '흥분한 리액션("미쳤다","대박","나이스","땄다"), 킬/처치 콜("잡았어","헤드샷","에이스"),',
-    '클러치·승리·욕설 폭발 등 하이라이트로 쓸 만한 순간의 인덱스만 고른다.',
-    '평범한 잡담/대기/이동 대사는 제외.',
-    '각 하이라이트를 highlights 배열에 {index(세그먼트 번호), score(0~1 중요도), reason(한국어 짧게)} 로 반환. 없으면 빈 배열.'
+    '위 지침의 "하이라이트 선별 기준"(음성)에 따라 하이라이트로 쓸 만한 구간만 골라,',
+    'highlights 배열에 {startSec, endSec, score(0~1), reason(한국어 짧게)} 로 반환한다.',
+    'startSec/endSec 는 그 하이라이트의 실제 시작~끝 시각(초). 짧으면 짧게, 길면 길게. 없으면 빈 배열.'
   ].join('\n')
   const res = await callProvider(provider, prompt, [], VISION_SCHEMA, dir, 't')
   if (res.spawnError) return { ok: false, spawnError: true, hits: [] }
   const arr = res.obj && Array.isArray((res.obj as { highlights?: unknown }).highlights)
-    ? (res.obj as { highlights: { index: number; score: number; reason: string }[] }).highlights
+    ? (res.obj as { highlights: RangeRaw[] }).highlights
     : []
+  const dur = durationSec > 0 ? durationSec : Infinity
   const hits: VisionHit[] = []
   for (const h of arr) {
-    const seg = segments[h.index]
-    if (seg) {
-      hits.push({
-        timeSec: (seg.start + seg.end) / 2,
-        score: clamp01(Number(h.score) || 0.5),
-        reason: String(h.reason || '')
-      })
+    const s = Math.max(0, Math.min(dur, numOr(h.startSec, NaN)))
+    const e = Math.max(0, Math.min(dur, numOr(h.endSec, NaN)))
+    if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
+      hits.push({ startSec: s, endSec: e, score: clamp01(numOr(h.score, 0.5)), reason: String(h.reason || '') })
     }
   }
   return { ok: true, spawnError: false, hits }
 }
 
+interface RangeRaw { startSec: number; endSec: number; score: number; reason: string }
+
 /**
  * 화면(vision) + 음성(audio) 히트를 융합해 하이라이트 구간을 만든다(순수, 테스트 대상).
- * - 각 히트를 [t-pre, t+post] 구간으로, 시간순 정렬 후 겹치면 병합.
- * - 두 소스(화면·음성)가 같은 구간에서 동의하면 점수 부스트(+0.25, 최대 1).
+ * - 길이는 AI가 준 [startSec,endSec]를 사용(고정 여유 없음). 작은 패딩·최소 길이만 보정.
+ * - 겹치는 구간은 병합. 화면·음성이 시간상 겹치면 점수 부스트(+0.25).
  */
-/** 화면·음성 히트가 "같은 순간"으로 간주되는 시각 근접 임계(초). */
-const AGREE_WINDOW = 3
+const FUSE_PAD = 0.3 // 잘림 방지용 최소 패딩(초)
+const FUSE_MIN_DUR = 1.2 // 너무 짧은 클립 방지 최소 길이(초)
 
 export function fuseHits(
   visionHits: VisionHit[],
   audioHits: VisionHit[],
-  opts: { preRollSec: number; postRollSec: number; durationSec: number; maxClips: number }
+  opts: { durationSec: number; maxClips: number }
 ): HighlightSegment[] {
-  const pre = Math.max(0, opts.preRollSec)
-  const post = Math.max(0, opts.postRollSec)
   const dur = opts.durationSec > 0 ? opts.durationSec : 0
-  type Tagged = { timeSec: number; score: number; reason: string; src: 'v' | 'a' }
+  const cap = (v: number): number => (dur > 0 ? Math.min(dur, Math.max(0, v)) : Math.max(0, v))
+  type Tagged = { inSec: number; outSec: number; score: number; reason: string; src: 'v' | 'a' }
   const all: Tagged[] = [
     ...visionHits.map((h) => ({ ...h, src: 'v' as const })),
     ...audioHits.map((h) => ({ ...h, src: 'a' as const }))
-  ].sort((a, b) => a.timeSec - b.timeSec)
+  ]
+    .map((h) => {
+      let inSec = cap(h.startSec - FUSE_PAD)
+      let outSec = cap(h.endSec + FUSE_PAD)
+      if (outSec - inSec < FUSE_MIN_DUR) {
+        const c = (inSec + outSec) / 2
+        inSec = cap(c - FUSE_MIN_DUR / 2)
+        outSec = cap(inSec + FUSE_MIN_DUR)
+      }
+      return { inSec, outSec, score: h.score, reason: h.reason, src: h.src }
+    })
+    .sort((a, b) => a.inSec - b.inSec)
   if (all.length === 0) return []
 
-  // 구간 병합은 확장 구간 겹침으로(점프컷 방지), 단 기여 히트는 원 시각·소스를 그대로 보관.
+  // 겹치는 구간 병합(기여 히트의 시각·소스 보관).
   type Build = { inSec: number; outSec: number; hits: Tagged[] }
   const merged: Build[] = []
   for (const h of all) {
-    const inSec = Math.max(0, h.timeSec - pre)
-    const outSec = dur > 0 ? Math.min(dur, h.timeSec + post) : h.timeSec + post
     const prev = merged[merged.length - 1]
-    if (prev && inSec <= prev.outSec) {
-      prev.outSec = Math.max(prev.outSec, outSec)
+    if (prev && h.inSec <= prev.outSec) {
+      prev.outSec = Math.max(prev.outSec, h.outSec)
       prev.hits.push(h)
     } else {
-      merged.push({ inSec, outSec, hits: [h] })
+      merged.push({ inSec: h.inSec, outSec: h.outSec, hits: [h] })
     }
   }
 
@@ -498,12 +549,12 @@ export function fuseHits(
     const baseScore = Math.max(...m.hits.map((h) => h.score))
     const hasV = m.hits.some((h) => h.src === 'v')
     const hasA = m.hits.some((h) => h.src === 'a')
-    // 부스트는 "구간에 둘 다 있음"이 아니라, 화면·음성 히트의 원 시각이 AGREE_WINDOW 내 근접일 때만.
+    // 화면·음성 히트가 시간상 겹치면(같은 순간 동의) 부스트.
     let agree = false
     if (hasV && hasA) {
       const vs = m.hits.filter((h) => h.src === 'v')
       const as = m.hits.filter((h) => h.src === 'a')
-      agree = vs.some((v) => as.some((a) => Math.abs(v.timeSec - a.timeSec) <= AGREE_WINDOW))
+      agree = vs.some((v) => as.some((a) => v.inSec < a.outSec && a.inSec < v.outSec))
     }
     const reasons: string[] = []
     for (const h of m.hits) if (h.reason && !reasons.includes(h.reason)) reasons.push(h.reason)
@@ -515,10 +566,10 @@ export function fuseHits(
       reason: tag + reasons.join(' · ')
     }
   })
-  return segs
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(1, opts.maxClips))
-    .sort((a, b) => a.inSec - b.inSec)
+  // maxClips<=0 이면 무제한(AI가 고른 만큼 전부). >0 이면 강도순 상위 N개.
+  const ranked = segs.sort((a, b) => b.score - a.score)
+  const picked = opts.maxClips > 0 ? ranked.slice(0, opts.maxClips) : ranked
+  return picked.sort((a, b) => a.inSec - b.inSec)
 }
 
 /** 한 번의 ffmpeg 패스로 intervalSec 간격 프레임을 축소 추출. */
@@ -544,7 +595,8 @@ async function extractFrames(
   return files.map((f, i) => ({ path: join(outDir, f), timeSec: i * intervalSec + intervalSec / 2 }))
 }
 
-interface VisionHit { timeSec: number; score: number; reason: string }
+// 하이라이트 히트 = AI가 직접 판단한 구간[startSec, endSec].
+interface VisionHit { startSec: number; endSec: number; score: number; reason: string }
 
 /** 비전 호출(이미지 배치 → highlights). provider 별 어댑터 사용. */
 async function visionBatch(
@@ -553,12 +605,12 @@ async function visionBatch(
   prompt: string,
   dir: string,
   tag: string
-): Promise<{ ok: boolean; spawnError: boolean; error?: string; highlights: { index: number; score: number; reason: string }[] }> {
+): Promise<{ ok: boolean; spawnError: boolean; error?: string; highlights: RangeRaw[] }> {
   const res = await callProvider(provider, prompt, images.map((im) => im.path), VISION_SCHEMA, dir, `v${tag}`)
   if (res.spawnError) return { ok: false, spawnError: true, highlights: [] }
   if (res.error) return { ok: false, spawnError: false, error: res.error, highlights: [] }
   const arr = res.obj && Array.isArray((res.obj as { highlights?: unknown }).highlights)
-    ? ((res.obj as { highlights: { index: number; score: number; reason: string }[] }).highlights)
+    ? ((res.obj as { highlights: RangeRaw[] }).highlights)
     : []
   return { ok: true, spawnError: false, highlights: arr }
 }
@@ -571,6 +623,7 @@ export async function analyzeHighlightsVision(
   const dir = await mkdtemp(join(tmpdir(), 'clipreel-vis-'))
   try {
     const dur = req.durationSec > 0 ? req.durationSec : 0
+    const agentDoc = await getAgentDoc()
 
     // ① 음성 전사(선택) → 전사 하이라이트. 내장(Transformers.js) 우선, 없으면 whisper CLI.
     const audioHits: VisionHit[] = []
@@ -585,14 +638,14 @@ export async function analyzeHighlightsVision(
       )
       if (segments.length > 0) {
         onProgress?.({ stage: 'analyze', current: 0, total: 1, message: '대사 분석 중…' })
-        const tr = await analyzeTranscriptHighlights(req.provider, segments, dir)
+        const tr = await analyzeTranscriptHighlights(req.provider, segments, dur, dir, agentDoc)
         if (!tr.spawnError) audioHits.push(...tr.hits)
       }
     }
 
-    // ② 화면 비전
-    const cap = req.mode === 'fast' ? 80 : 200
-    const baseInterval = req.mode === 'fast' ? 3 : 1
+    // ② 화면 비전 — 샘플링 촘촘하게(긴 영상도 1~2초 간격), 배치를 키워 호출 수 억제.
+    const cap = req.mode === 'fast' ? 120 : 320
+    const baseInterval = req.mode === 'fast' ? 2 : 1
     // 영상이 길면 간격을 늘려 cap 안에서 전체를 고르게 커버.
     const interval = dur > 0 ? Math.max(baseInterval, dur / cap) : baseInterval
 
@@ -602,20 +655,26 @@ export async function analyzeHighlightsVision(
       return { segments: [], error: '프레임을 추출하지 못했습니다.' }
     }
 
-    const BATCH = 12
+    const BATCH = 16
     const batches = Math.ceil(frames.length / BATCH)
     const visionHits: VisionHit[] = []
     for (let b = 0; b < batches; b++) {
       const batch = frames.slice(b * BATCH, (b + 1) * BATCH)
       onProgress?.({ stage: 'analyze', current: b + 1, total: batches, message: `화면 분석 ${b + 1}/${batches}` })
-      const tsList = batch.map((f, i) => `${i}=${f.timeSec.toFixed(1)}초`).join(', ')
+      const tsList = batch.map((f) => `${f.timeSec.toFixed(1)}초`).join(', ')
+      const winStart = Math.max(0, batch[0].timeSec - interval)
+      const winEnd = (dur > 0 ? Math.min(dur, batch[batch.length - 1].timeSec + interval) : batch[batch.length - 1].timeSec + interval)
       const prompt = [
-        '너는 게임 영상의 하이라이트 편집자다. 아래 이미지들은 한 게임 영상에서 시간 순서로 추출한 프레임이다.',
-        `프레임 인덱스=시간: ${tsList}`,
-        '킬, 교전, 클러치, 처치/승리 장면, 큰 리액션 등 "하이라이트"에 해당하는 프레임만 고른다.',
-        '평범하거나 정적인(로비/대기/이동만) 프레임은 제외한다.',
-        '각 하이라이트를 highlights 배열에 {index(프레임 번호), score(0~1 중요도), reason(한국어 짧게)} 로 반환.',
-        '해당 없으면 빈 배열.'
+        agentDoc,
+        '',
+        '---',
+        '',
+        '아래 이미지들은 한 게임 영상에서 시간 순서로 추출한 프레임이다.',
+        `각 프레임의 시각(초): ${tsList}`,
+        '위 지침의 "하이라이트 선별 기준"에 따라 하이라이트 구간을 골라,',
+        'highlights 배열에 {startSec, endSec, score(0~1), reason(한국어로 짧게)} 로 반환한다.',
+        'startSec/endSec 는 그 하이라이트의 실제 시작~끝 시각(초)이다. 짧은 순간은 짧게, 긴 교전은',
+        `길게 잡되 이 묶음의 시간 범위(${winStart.toFixed(1)}~${winEnd.toFixed(1)}초) 안에서. 평범/정적 구간은 제외. 없으면 빈 배열.`
       ].join('\n')
       const res = await visionBatch(req.provider, batch, prompt, dir, String(b))
       if (res.spawnError) {
@@ -625,16 +684,18 @@ export async function analyzeHighlightsVision(
         return { segments: [], error: res.error }
       }
       for (const h of res.highlights) {
-        const f = batch[h.index]
-        if (f) visionHits.push({ timeSec: f.timeSec, score: clamp01(Number(h.score) || 0.5), reason: String(h.reason || '') })
+        // AI 가 준 구간을 이 묶음 시간 범위로 클램프(환각 방지).
+        const s = Math.max(winStart, Math.min(winEnd, numOr(h.startSec, NaN)))
+        const e = Math.max(winStart, Math.min(winEnd, numOr(h.endSec, NaN)))
+        if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
+          visionHits.push({ startSec: s, endSec: e, score: clamp01(numOr(h.score, 0.5)), reason: String(h.reason || '') })
+        }
       }
     }
 
     // ③ 융합
     onProgress?.({ stage: 'fuse', current: 1, total: 1, message: '결과 합치는 중…' })
     const top = fuseHits(visionHits, audioHits, {
-      preRollSec: req.preRollSec,
-      postRollSec: req.postRollSec,
       durationSec: dur,
       maxClips: req.maxClips
     })
@@ -676,7 +737,7 @@ const CHAT_SCHEMA = {
   }
 } as const
 
-function buildPrompt(req: ChatEditRequest): string {
+function buildPrompt(req: ChatEditRequest, agentDoc: string): string {
   const rows = req.clips
     .map(
       (c) =>
@@ -688,7 +749,7 @@ function buildPrompt(req: ChatEditRequest): string {
     )
     .join('\n')
   return [
-    AGENT_DOC,
+    agentDoc,
     '',
     '---',
     '',
@@ -704,7 +765,7 @@ export async function chatEdit(req: ChatEditRequest): Promise<ChatEditResult> {
   const provider = req.provider ?? 'codex'
   const dir = await mkdtemp(join(tmpdir(), 'clipreel-ai-'))
   try {
-    const prompt = buildPrompt(req)
+    const prompt = buildPrompt(req, await getAgentDoc())
     const res = await callProvider(provider, prompt, [], CHAT_SCHEMA, dir, 'chat')
     if (res.spawnError) {
       return { ops: [], explanation: '', error: `${provider} CLI 를 실행하지 못했습니다(설치/로그인 확인).` }
@@ -905,6 +966,85 @@ async function callProvider(
 function cliError(name: string, code: number | null, stderr: string): string {
   const tail = (stderr || '').trim().split('\n').slice(-3).join(' ').slice(-300)
   return `${name} 실행 실패(code ${code ?? '?'}): ${tail || '로그인/쿼터/권한을 확인하세요.'}`
+}
+
+/** provider 에 프롬프트를 보내 자유 텍스트(마크다운 등) 응답을 받는다. */
+async function callProviderText(
+  provider: AiProvider,
+  prompt: string,
+  dir: string
+): Promise<{ text: string; spawnError: boolean; error?: string }> {
+  if (provider === 'claude') {
+    const { stdout, stderr, code, spawnError } = await runCli(
+      'claude', ['-p', '--output-format', 'json', '--permission-mode', 'acceptEdits'], dir, prompt
+    )
+    if (spawnError) return { text: '', spawnError: true }
+    if (code !== 0) return { text: '', spawnError: false, error: cliError('claude', code, stderr) }
+    return { text: claudeResultText(stdout), spawnError: false }
+  }
+  if (provider === 'gemini') {
+    const useAgy = await cmdExists('agy')
+    if (useAgy) {
+      const { stdout, stderr, code, spawnError } = await runCli('agy', ['--prompt', prompt, '--permission', 'always-proceed'], dir, '')
+      if (spawnError) return { text: '', spawnError: true }
+      if (code !== 0) return { text: '', spawnError: false, error: cliError('agy', code, stderr) }
+      return { text: stdout, spawnError: false }
+    }
+    const { stdout, stderr, code, spawnError } = await runCli('gemini', ['-p', '아래 입력을 처리하라.', '-o', 'json', '--skip-trust'], dir, prompt)
+    if (spawnError) return { text: '', spawnError: true }
+    if (code !== 0) return { text: '', spawnError: false, error: cliError('gemini', code, stderr) }
+    return { text: geminiResultText(stdout), spawnError: false }
+  }
+  // codex — 스키마 없이 마지막 메시지 텍스트.
+  const lastPath = join(dir, 'gen_last.txt')
+  const { stdout, stderr, code, spawnError } = await runCodex(
+    ['exec', '--skip-git-repo-check', '--output-last-message', lastPath, '-'], dir, prompt
+  )
+  if (spawnError) return { text: '', spawnError: true }
+  if (code !== 0) return { text: '', spawnError: false, error: cliError('codex', code, stderr) }
+  let raw = ''
+  try { raw = await readFile(lastPath, 'utf8') } catch { raw = stdout }
+  return { text: raw, spawnError: false }
+}
+
+/** 코드펜스(```...```)로 감싸진 경우 안쪽만 추출. */
+function stripFence(s: string): string {
+  const m = s.match(/^\s*```[a-zA-Z]*\n([\s\S]*?)\n```\s*$/)
+  return (m ? m[1] : s).trim()
+}
+
+/** 게임 설명을 받아 현재 지침을 그 게임에 맞게 AI가 다시 작성. (UI 미리보기 후 저장) */
+export async function generateInstructions(
+  provider: AiProvider,
+  gameDescription: string,
+  currentDoc: string
+): Promise<{ text: string; error?: string }> {
+  const dir = await mkdtemp(join(tmpdir(), 'clipreel-instr-'))
+  try {
+    const prompt = [
+      '너는 게임 영상 편집기의 설정 도우미다. 아래 "현재 작업지시 문서"의 전체 구조·규칙·말투는 그대로 유지하되,',
+      '사용자가 알려준 게임에 맞게 특히 "하이라이트 선별 기준" 섹션을 그 게임의 특성에 맞춰 구체적으로 보강·수정하라.',
+      '- 그 게임에서 무엇이 하이라이트인지(고유 이벤트/용어/UI 신호), 화면·음성에서 어떻게 알아보는지 구체적으로.',
+      '- "절대 제외"에 그 게임의 비하이라이트(로비/상점/리스폰 등)를 반영.',
+      '- 비파괴/실제 ID/JSON 출력/startSec·endSec 구간 반환 등 기존 규칙은 절대 바꾸지 말 것.',
+      '출력은 수정된 마크다운 문서 "전문"만. 설명·코드펜스 없이 문서 자체만 출력한다.',
+      '',
+      `대상 게임: ${gameDescription}`,
+      '',
+      '현재 작업지시 문서:',
+      currentDoc
+    ].join('\n')
+    const r = await callProviderText(provider, prompt, dir)
+    if (r.spawnError) return { text: '', error: `${provider} CLI 를 실행하지 못했습니다(설치/로그인 확인).` }
+    if (r.error) return { text: '', error: r.error }
+    const text = stripFence(r.text)
+    if (!text || text.length < 40) return { text: '', error: 'AI 응답이 비었습니다. 다시 시도해 주세요.' }
+    return { text }
+  } catch (e) {
+    return { text: '', error: e instanceof Error ? e.message : String(e) }
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
 }
 
 /** 문자열에서 마지막 최상위 JSON 오브젝트를 추출. */

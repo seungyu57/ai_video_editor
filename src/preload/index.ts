@@ -3,6 +3,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { EnvStatus, Project, SourceClip } from '@shared/types'
 import type {
+  AiProvider,
   ChatEditRequest,
   ChatEditResult,
   HighlightRequest,
@@ -53,6 +54,17 @@ const api = {
     ipcRenderer.invoke('ai:visionHighlights', req),
   chatEdit: (req: ChatEditRequest): Promise<ChatEditResult> =>
     ipcRenderer.invoke('ai:chatEdit', req),
+  getInstructions: (): Promise<{ text: string; isCustom: boolean; defaultText: string }> =>
+    ipcRenderer.invoke('ai:getInstructions'),
+  saveInstructions: (text: string): Promise<void> =>
+    ipcRenderer.invoke('ai:saveInstructions', text),
+  resetInstructions: (): Promise<string> => ipcRenderer.invoke('ai:resetInstructions'),
+  generateInstructions: (
+    gameDescription: string,
+    currentDoc: string,
+    provider: AiProvider
+  ): Promise<{ text: string; error?: string }> =>
+    ipcRenderer.invoke('ai:generateInstructions', gameDescription, currentDoc, provider),
 
   onExportProgress: (cb: (p: ExportProgressEvent) => void): (() => void) => {
     const listener = (_e: unknown, p: ExportProgressEvent): void => cb(p)

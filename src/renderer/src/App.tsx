@@ -33,6 +33,7 @@ import { SourceBin } from './components/SourceBin'
 import { ProgramMonitor } from './components/ProgramMonitor'
 import { TimelinePanel } from './components/TimelinePanel'
 import { AiPanel, type ChatMsg } from './components/AiPanel'
+import { InstructionsModal } from './components/InstructionsModal'
 import { useTimelinePlayer } from './useTimelinePlayer'
 
 type Snapshot = { tracks: Track[]; clips: TimelineClip[] }
@@ -61,6 +62,9 @@ export default function App(): JSX.Element {
   const [visionMode, setVisionMode] = useState<'fast' | 'precise'>('fast')
   const [useAudio, setUseAudio] = useState(true)
   const [aiProvider, setAiProvider] = useState<AiProvider>('codex')
+  const [hlAuto, setHlAuto] = useState(true) // true=개수 제한 없이 AI가 알아서
+  const [hlCount, setHlCount] = useState(8) // 하이라이트 개수(수동)
+  const [showInstr, setShowInstr] = useState(false) // AI 지침 편집 모달
   const videoRef = useRef<HTMLVideoElement>(null)
 
   const { tracks: baseTracks, clips: baseClips } = project.timeline
@@ -360,9 +364,9 @@ export default function App(): JSX.Element {
         mode: visionMode,
         useAudio: withAudio,
         whisperCmd: env?.whisperCmd ?? null,
-        maxClips: 8,
-        preRollSec: project.settings.preRollSec,
-        postRollSec: project.settings.postRollSec
+        maxClips: hlAuto ? 0 : hlCount,
+        preRollSec: 0, // 길이는 AI가 구간으로 직접 판단(고정 여유 미사용)
+        postRollSec: 0
       })
       if (error) {
         setError(error)
@@ -663,6 +667,11 @@ export default function App(): JSX.Element {
               useAudio={useAudio}
               onUseAudioChange={setUseAudio}
               whisperFound={env?.whisperFound ?? false}
+              hlAuto={hlAuto}
+              onHlAutoChange={setHlAuto}
+              hlCount={hlCount}
+              onHlCountChange={setHlCount}
+              onEditInstructions={() => setShowInstr(true)}
               onHighlight={runHighlight}
               onChat={runChat}
               onAccept={acceptProposal}
@@ -715,6 +724,8 @@ export default function App(): JSX.Element {
           />
         </div>
       </div>
+
+      {showInstr && <InstructionsModal provider={aiProvider} onClose={() => setShowInstr(false)} />}
     </div>
   )
 }

@@ -313,38 +313,70 @@ export function moveClips(
   return { clips, tracks: state.tracks, changed: [...movingIds] }
 }
 
-/** 왼쪽 가장자리 트림(오른쪽 끝 고정). 원본 머리에서 하드스톱. */
-export function trimLeft(state: OpState, id: string, newStartSec: number): OpResult {
-  const clip = findClip(state, id)
-  if (!clip) return reject(state, '클립 없음')
-  const track = findTrack(state, clip.trackId)
-  if (!track || track.locked) return reject(state, '잠긴 트랙')
-
+/** 왼쪽 가장자리 트림 계산(오른쪽 끝 고정). 순수 — 새 클립 반환. */
+function computeTrimLeft(clip: TimelineClip, newStartSec: number, fps: number): TimelineClip {
   const sp = speedOf(clip)
-  const ns = qf(newStartSec, state.fps)
+  const ns = qf(newStartSec, fps)
   const deltaSrc = (ns - clip.startSec) * sp
   const newIn = clamp(clip.inSec + deltaSrc, 0, clip.outSec - MIN_DUR * sp)
   const end = clipEnd(clip) // 고정
   const newDurTl = (clip.outSec - newIn) / sp
   const newStart = Math.max(0, end - newDurTl)
-  const moved: TimelineClip = { ...clip, inSec: newIn, startSec: newStart }
-  return { clips: resolveOverwrite(state.clips, moved), tracks: state.tracks, changed: [id] }
+  return { ...clip, inSec: newIn, startSec: newStart }
 }
 
-/** 오른쪽 가장자리 트림(왼쪽 시작 고정). 원본 끝에서 하드스톱. */
-export function trimRight(state: OpState, id: string, newEndSec: number): OpResult {
+/** 오른쪽 가장자리 트림 계산(왼쪽 시작 고정). 순수 — 새 클립 반환. */
+function computeTrimRight(clip: TimelineClip, newEndSec: number, fps: number, srcDur: number): TimelineClip {
+  const sp = speedOf(clip)
+  const ne = qf(newEndSec, fps)
+  const newOut = clamp(clip.inSec + (ne - clip.startSec) * sp, clip.inSec + MIN_DUR * sp, srcDur)
+  return { ...clip, outSec: newOut }
+}
+
+/** clip 과 같은 linkId 인 (잠기지 않은) 짝 클립들. */
+function linkedPartners(state: OpState, clip: TimelineClip): TimelineClip[] {
+  if (!clip.linkId) return []
+  return state.clips.filter(
+    (c) => c.id !== clip.id && c.linkId === clip.linkId && !findTrack(state, c.trackId)?.locked
+  )
+}
+
+/** 왼쪽 가장자리 트림(오른쪽 끝 고정). linked 면 같은 링크 짝도 같은 양만큼 함께 트림. */
+export function trimLeft(state: OpState, id: string, newStartSec: number, linked = true): OpResult {
   const clip = findClip(state, id)
   if (!clip) return reject(state, '클립 없음')
   const track = findTrack(state, clip.trackId)
   if (!track || track.locked) return reject(state, '잠긴 트랙')
-  const src = state.sources.find((s) => s.id === clip.sourceId)
-  const srcDur = src?.durationSec ?? clip.outSec
 
-  const sp = speedOf(clip)
-  const ne = qf(newEndSec, state.fps)
-  const newOut = clamp(clip.inSec + (ne - clip.startSec) * sp, clip.inSec + MIN_DUR * sp, srcDur)
-  const moved: TimelineClip = { ...clip, outSec: newOut }
-  return { clips: resolveOverwrite(state.clips, moved), tracks: state.tracks, changed: [id] }
+  let clips = resolveOverwrite(state.clips, computeTrimLeft(clip, newStartSec, state.fps))
+  const changed = [id]
+  if (linked) {
+    for (const p of linkedPartners(state, clip)) {
+      clips = resolveOverwrite(clips, computeTrimLeft(p, newStartSec, state.fps))
+      changed.push(p.id)
+    }
+  }
+  return { clips, tracks: state.tracks, changed }
+}
+
+/** 오른쪽 가장자리 트림(왼쪽 시작 고정). linked 면 같은 링크 짝도 함께 트림. */
+export function trimRight(state: OpState, id: string, newEndSec: number, linked = true): OpResult {
+  const clip = findClip(state, id)
+  if (!clip) return reject(state, '클립 없음')
+  const track = findTrack(state, clip.trackId)
+  if (!track || track.locked) return reject(state, '잠긴 트랙')
+  const srcDurOf = (c: TimelineClip): number =>
+    state.sources.find((s) => s.id === c.sourceId)?.durationSec ?? c.outSec
+
+  let clips = resolveOverwrite(state.clips, computeTrimRight(clip, newEndSec, state.fps, srcDurOf(clip)))
+  const changed = [id]
+  if (linked) {
+    for (const p of linkedPartners(state, clip)) {
+      clips = resolveOverwrite(clips, computeTrimRight(p, newEndSec, state.fps, srcDurOf(p)))
+      changed.push(p.id)
+    }
+  }
+  return { clips, tracks: state.tracks, changed }
 }
 
 /** tlTime 에서 분할. 좌측은 id 유지, 우측은 새 id. 정확히 맞붙음(공백/겹침 없음). */

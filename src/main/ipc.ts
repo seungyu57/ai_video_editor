@@ -8,9 +8,20 @@ import { saveProject, loadProject } from './project'
 import { ffmpegPath, ffprobePath, checkFfmpeg } from './ffmpeg'
 import { allowPaths, isAllowed } from './mediaAccess'
 import { exportMontage } from './export'
-import { analyzeTrim, analyzeHighlights, analyzeHighlightsVision, chatEdit, detectWhisper } from './ai'
+import {
+  analyzeTrim,
+  analyzeHighlights,
+  analyzeHighlightsVision,
+  chatEdit,
+  detectWhisper,
+  getInstructions,
+  saveInstructions,
+  resetInstructions,
+  generateInstructions
+} from './ai'
 import type { EnvStatus, Project, SourceClip } from '@shared/types'
 import type {
+  AiProvider,
   ChatEditRequest,
   ChatEditResult,
   HighlightRequest,
@@ -165,6 +176,18 @@ export function registerIpc(): void {
   ipcMain.handle('ai:chatEdit', async (_e, req: ChatEditRequest): Promise<ChatEditResult> => {
     return chatEdit(req)
   })
+
+  // AI 지침(ai-agent.md) 조회/저장/복원
+  ipcMain.handle('ai:getInstructions', async () => getInstructions())
+  ipcMain.handle('ai:saveInstructions', async (_e, text: string) => {
+    await saveInstructions(text)
+  })
+  ipcMain.handle('ai:resetInstructions', async (): Promise<string> => resetInstructions())
+  ipcMain.handle(
+    'ai:generateInstructions',
+    async (_e, gameDescription: string, currentDoc: string, provider: AiProvider) =>
+      generateInstructions(provider, gameDescription, currentDoc)
+  )
 
   // 내보내기: 타임라인 → 단일 mp4 (저장 경로 다이얼로그 + 진행 이벤트)
   ipcMain.handle('export:render', async (e, project: Project): Promise<string | null> => {
