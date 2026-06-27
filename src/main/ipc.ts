@@ -8,7 +8,7 @@ import { saveProject, loadProject } from './project'
 import { ffmpegPath, ffprobePath, checkFfmpeg } from './ffmpeg'
 import { allowPaths, isAllowed } from './mediaAccess'
 import { exportMontage } from './export'
-import { analyzeTrim, analyzeHighlights, analyzeHighlightsVision, chatEdit } from './ai'
+import { analyzeTrim, analyzeHighlights, analyzeHighlightsVision, chatEdit, detectWhisper } from './ai'
 import type { EnvStatus, Project, SourceClip } from '@shared/types'
 import type {
   ChatEditRequest,
@@ -22,11 +22,11 @@ import type {
 
 const execFileAsync = promisify(execFile)
 
-/** codex CLI 존재 여부(향후 AI 기능용, 현재 UI 미사용). */
-async function detectCodex(): Promise<boolean> {
+/** 지정 CLI 가 PATH 에 있는지. */
+async function detectCmd(name: string): Promise<boolean> {
   const cmd = process.platform === 'win32' ? 'where' : 'which'
   try {
-    await execFileAsync(cmd, ['codex'], { windowsHide: true })
+    await execFileAsync(cmd, [name], { windowsHide: true })
     return true
   } catch {
     return false
@@ -37,8 +37,28 @@ export function registerIpc(): void {
   // 환경 점검
   ipcMain.handle('env:check', async (): Promise<EnvStatus> => {
     const ffmpegOk = await checkFfmpeg()
-    const codexFound = await detectCodex()
-    return { ffmpegPath: ffmpegPath(), ffprobePath: ffprobePath(), ffmpegOk, codexFound }
+    const [codexFound, agyFound, geminiLegacy, claudeFound, whisperCmd] = await Promise.all([
+      detectCmd('codex'),
+      detectCmd('agy'), // Antigravity CLI (Gemini CLI 후속)
+      detectCmd('gemini'),
+      detectCmd('claude'),
+      detectWhisper()
+    ])
+    // 구글 provider 사용 가능 = Antigravity(agy) 설치됨. 레거시 gemini CLI 는 2026-06 종료라
+    // 설치돼 있어도 '사용 가능'으로 치지 않는다(있으면 런타임 폴백으로만 시도).
+    void geminiLegacy
+    const geminiFound = agyFound
+    return {
+      ffmpegPath: ffmpegPath(),
+      ffprobePath: ffprobePath(),
+      ffmpegOk,
+      codexFound,
+      geminiFound,
+      claudeFound,
+      // 음성 분석은 내장(Transformers.js, 의존성 동봉)으로 항상 가능. CLI(whisperCmd)는 폴백.
+      whisperFound: true,
+      whisperCmd
+    }
   })
 
   // 폴더 선택 다이얼로그
@@ -131,8 +151,11 @@ export function registerIpc(): void {
     'ai:visionHighlights',
     async (e, req: VisionHighlightRequest): Promise<{ segments: HighlightSegment[]; error?: string }> => {
       if (!isAllowed(req.sourcePath)) throw new Error('허용되지 않은 경로입니다')
+      // 보안: 렌더러가 보낸 whisperCmd 는 신뢰하지 않고, 메인에서 직접 재탐지한 값만 사용.
+      const whisperCmd = req.useAudio ? await detectWhisper() : null
+      const safeReq = { ...req, whisperCmd }
       const sender = e.sender
-      return analyzeHighlightsVision(req, (p) => {
+      return analyzeHighlightsVision(safeReq, (p) => {
         if (!sender.isDestroyed()) sender.send('ai:visionProgress', p)
       })
     }

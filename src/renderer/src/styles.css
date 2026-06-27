@@ -307,3 +307,43 @@ button.on { color: var(--accent); border-color: var(--accent-ring); background: 
 .ai-seg button { padding: 5px 12px; font-size: 12px; border: none; border-radius: 0; background: transparent; color: var(--text-dim); }
 .ai-seg button:hover:not(:disabled) { background: var(--l3); }
 .ai-seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+/* ── AI 음성 분석 토글 ── */
+.ai-audio { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); cursor: pointer; padding: 2px 0; }
+.ai-audio input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.ai-audio.off { color: var(--muted); cursor: not-allowed; }
+.ai-audio.off input { cursor: not-allowed; }
+
+/* ── AI provider 드롭다운 ── */
+.ai-select {
+  flex: 1; background: var(--l2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 8px; font-size: 12px; font-family: inherit; cursor: pointer;
+}
+.ai-select:focus { outline: none; border-color: var(--accent-ring); }
+
+/* ── AI provider 로고 세그먼트 ── */
+.ai-providers { align-items: center; }
+.ai-prov-seg { flex: 1; }
+.ai-prov-seg button {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 8px; font-size: 12px;
+}
+.ai-prov-seg button svg { flex-shrink: 0; display: block; }
+.ai-prov-seg button:disabled { opacity: 0.35; }
+
+
+/* ── 원본/편집본 비교 토글 + 바뀐 클립 강조 ── */
+.compare-toggle { display: inline-flex; background: var(--l1); border: 1px solid var(--border); border-radius: 7px; overflow: hidden; margin-right: 4px; }
+.compare-toggle button { padding: 4px 12px; font-size: 12px; border: none; border-radius: 0; background: transparent; color: var(--text-dim); cursor: pointer; }
+.compare-toggle button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.tl-clip.changed { box-shadow: inset 0 0 0 2px var(--good), 0 0 10px rgba(63,185,80,0.4); }
+
+/* ── 미디어 항목 삭제 버튼 ── */
+.bin-item { position: relative; }
+.bin-del {
+  flex-shrink: 0; width: 22px; height: 22px; padding: 0; border-radius: 6px;
+  background: transparent; border: none; color: var(--muted); font-size: 12px;
+  opacity: 0; transition: opacity var(--ease), background var(--ease), color var(--ease);
+}
+.bin-item:hover .bin-del { opacity: 1; }
+.bin-del:hover { background: rgba(248, 81, 73, 0.15); color: var(--err); }

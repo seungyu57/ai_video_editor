@@ -4,6 +4,7 @@ import { createEmptyProject, migrateProject } from '@shared/types'
 import { clipEnd, totalDuration } from '@shared/timeline'
 import {
   applyOps,
+  type AiProvider,
   type ChatClipInfo,
   type EditOp,
   type Proposal
@@ -54,15 +55,24 @@ export default function App(): JSX.Element {
   const [past, setPast] = useState<Snapshot[]>([])
   const [future, setFuture] = useState<Snapshot[]>([])
   const [proposal, setProposal] = useState<Proposal | null>(null)
+  const [compareBefore, setCompareBefore] = useState(false) // 제안 미리보기 중 원본 보기 토글
   const [aiBusy, setAiBusy] = useState(false)
   const [chatLog, setChatLog] = useState<ChatMsg[]>([])
   const [visionMode, setVisionMode] = useState<'fast' | 'precise'>('fast')
+  const [useAudio, setUseAudio] = useState(true)
+  const [aiProvider, setAiProvider] = useState<AiProvider>('codex')
   const videoRef = useRef<HTMLVideoElement>(null)
 
   const { tracks: baseTracks, clips: baseClips } = project.timeline
   // 제안 미리보기 중이면 미리보기 스냅샷을 화면/플레이어에 반영(원본은 그대로, 적용 시 commit).
-  const tracks = proposal ? proposal.preview.tracks : baseTracks
-  const clips = proposal ? proposal.preview.clips : baseClips
+  // compareBefore=true 면 비교를 위해 원본을 보여줌.
+  const showPreview = !!proposal && !compareBefore
+  // 원본 비교: proposal.before 가 있으면 그것(예: 하이라이트는 전체 원본), 없으면 적용 직전 타임라인.
+  const beforeSnap = proposal?.before ?? { tracks: baseTracks, clips: baseClips }
+  const tracks = !proposal ? baseTracks : showPreview ? proposal.preview.tracks : beforeSnap.tracks
+  const clips = !proposal ? baseClips : showPreview ? proposal.preview.clips : beforeSnap.clips
+  // 편집본 볼 때만 바뀐 클립 강조.
+  const highlightChangedIds = showPreview ? proposal!.changedIds : []
   const total = useMemo(() => totalDuration(clips), [clips])
   const sourceById = useMemo(() => new Map(project.sources.map((s) => [s.id, s])), [project.sources])
   const hasClips = baseClips.length > 0
@@ -139,6 +149,30 @@ export default function App(): JSX.Element {
       return { ...p, sources: merged, name }
     })
     setSelectedSourceId((cur) => cur ?? incoming[0]?.id ?? null)
+  }
+
+  /** 미디어 빈에서 소스 제거(참조만 삭제, 원본 파일은 안 건드림). 타임라인 사용 중이면 확인 후 클립도 정리. */
+  function removeSource(id: string): void {
+    if (proposal || aiBusy) {
+      setStatus('AI 작업 중에는 미디어를 삭제할 수 없어요')
+      return
+    }
+    const using = baseClips.filter((c) => c.sourceId === id)
+    if (using.length > 0 && !window.confirm(`타임라인에서 ${using.length}개 클립이 이 미디어를 사용 중입니다.\n클립까지 함께 삭제할까요?`)) {
+      return
+    }
+    setProject((p) => ({
+      ...p,
+      sources: p.sources.filter((s) => s.id !== id),
+      timeline: { ...p.timeline, clips: p.timeline.clips.filter((c) => c.sourceId !== id) }
+    }))
+    setSelectedSourceId((cur) => (cur === id ? null : cur))
+    setSelectedClipIds((prev) => {
+      if (![...prev].some((cid) => using.some((c) => c.id === cid))) return prev
+      const next = new Set(prev)
+      using.forEach((c) => next.delete(c.id))
+      return next
+    })
   }
 
   async function importFolder(): Promise<void> {
@@ -272,7 +306,8 @@ export default function App(): JSX.Element {
     kind: Proposal['kind'],
     title: string,
     ops: EditOp[],
-    explanation?: string
+    explanation?: string,
+    before?: { tracks: Track[]; clips: TimelineClip[] }
   ): void {
     if (ops.length === 0) {
       setStatus('변경할 내용이 없습니다')
@@ -284,12 +319,14 @@ export default function App(): JSX.Element {
       return
     }
     const dropped = res.rejected.length ? ` · ${res.rejected.length}개 건너뜀` : ''
+    setCompareBefore(false) // 새 제안은 편집본부터 보여줌
     setProposal({
       id: `prop_${Date.now().toString(36)}`,
       kind,
       title,
       summary: `${title}: ${res.applied}개 변경${dropped}`,
       preview: { tracks: res.tracks, clips: res.clips },
+      before,
       changedIds: res.changed,
       explanation
     })
@@ -299,18 +336,30 @@ export default function App(): JSX.Element {
   // AI 비전 하이라이트: codex 가 화면을 직접 보고 하이라이트 선별 → 타임라인 끝에 배치(제안).
   async function runHighlight(): Promise<void> {
     if (proposal || aiBusy) return
-    const src = selectedSourceId ? sourceById.get(selectedSourceId) : null
-    if (!src) {
-      setStatus('하이라이트할 소스를 미디어 빈에서 선택하세요')
+    if (!hasClips) {
+      setStatus('먼저 좌측 미디어를 타임라인으로 드래그하세요')
       return
     }
+    // 분석 대상: 선택된 소스 우선, 없으면 타임라인 첫 클립의 소스.
+    const srcId = (selectedSourceId && sourceById.get(selectedSourceId))
+      ? selectedSourceId
+      : baseClips[0]?.sourceId
+    const src = srcId ? sourceById.get(srcId) : null
+    if (!src) {
+      setStatus('하이라이트할 영상을 찾지 못했습니다')
+      return
+    }
+    const withAudio = useAudio && (env?.whisperFound ?? false)
     setAiBusy(true)
-    setStatus(visionMode === 'fast' ? 'AI 비전 분석 중(빠름)…' : 'AI 비전 분석 중(정밀)…')
+    setStatus(`${aiProvider} 분석 중(${visionMode === 'fast' ? '빠름' : '정밀'}${withAudio ? ' · 음성 포함' : ''})…`)
     try {
       const { segments, error } = await window.clipreel.visionHighlights({
         sourcePath: src.path,
         durationSec: src.durationSec,
+        provider: aiProvider,
         mode: visionMode,
+        useAudio: withAudio,
+        whisperCmd: env?.whisperCmd ?? null,
         maxClips: 8,
         preRollSec: project.settings.preRollSec,
         postRollSec: project.settings.postRollSec
@@ -337,11 +386,19 @@ export default function App(): JSX.Element {
         })
         cursor += s.outSec - s.inSec
       }
+      // "원본" 비교용: 전체 원본 영상을 한 클립으로 배치한 스냅샷(타임라인에 안 올렸어도 비교 가능).
+      const beforeOps: EditOp[] = [
+        ...baseClips.map((c) => ({ op: 'remove', clipId: c.id }) as EditOp),
+        { op: 'placeRange', sourceId: src.id, trackId: firstVideoTrackId, valueSec: 0, inSec: 0, outSec: src.durationSec }
+      ]
+      const beforeRes = applyOps(curState(), beforeOps)
+      const before = { tracks: beforeRes.tracks, clips: beforeRes.clips }
       makeProposal(
         'highlight',
         'AI 하이라이트 릴',
         ops,
-        `AI가 고른 ${segments.length}곳으로 새 하이라이트 릴 구성`
+        `AI가 고른 ${segments.length}곳으로 새 하이라이트 릴 구성`,
+        before
       )
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -363,7 +420,7 @@ export default function App(): JSX.Element {
     }))
     setAiBusy(true)
     try {
-      const res = await window.clipreel.chatEdit({ instruction, clips: clipInfos })
+      const res = await window.clipreel.chatEdit({ instruction, clips: clipInfos, provider: aiProvider })
       if (res.error) {
         setChatLog((l) => [...l, { role: 'ai', text: res.error! }])
         return
@@ -381,11 +438,13 @@ export default function App(): JSX.Element {
     if (!proposal) return
     const p = proposal
     setProposal(null)
+    setCompareBefore(false)
     commit(p.preview, p.title)
     setSelectedClipIds(new Set())
   }
   function cancelProposal(): void {
     setProposal(null)
+    setCompareBefore(false)
   }
 
   const locked = busy || aiBusy || !!proposal
@@ -466,7 +525,7 @@ export default function App(): JSX.Element {
       } else if (!ctrl && (e.key === '+' || e.key === '=')) {
         setPxPerSec((p) => Math.min(500, p * 1.25))
       } else if (!ctrl && (e.key === '-' || e.key === '_')) {
-        setPxPerSec((p) => Math.max(5, p * 0.8))
+        setPxPerSec((p) => Math.max(0.5, p * 0.8))
       }
     }
     window.addEventListener('keydown', onKey)
@@ -516,8 +575,24 @@ export default function App(): JSX.Element {
       {error && <div className="banner error">오류: {error}</div>}
       {proposal && (
         <div className="banner proposal">
-          <span>🤖 {proposal.summary} — 미리보기 중</span>
+          <span>🤖 {proposal.summary} — {compareBefore ? '원본 보는 중' : '편집본 미리보기'}</span>
           <span className="banner-actions">
+            <span className="compare-toggle" role="group" aria-label="원본/편집본 비교">
+              <button
+                className={compareBefore ? 'on' : ''}
+                onClick={() => setCompareBefore(true)}
+                title="원본 타임라인 보기"
+              >
+                원본
+              </button>
+              <button
+                className={!compareBefore ? 'on' : ''}
+                onClick={() => setCompareBefore(false)}
+                title="AI 편집본 보기(바뀐 부분 강조)"
+              >
+                편집본
+              </button>
+            </span>
             <button className="primary" onClick={acceptProposal} disabled={aiBusy}>
               적용
             </button>
@@ -536,6 +611,7 @@ export default function App(): JSX.Element {
               busy={busy}
               selectedSourceId={selectedSourceId}
               onPick={pickSource}
+              onRemoveSource={removeSource}
               onDragSource={setDraggingSourceId}
             />
           </div>
@@ -569,13 +645,24 @@ export default function App(): JSX.Element {
             <AiPanel
               env={env}
               aiBusy={aiBusy}
+              hasClips={hasClips}
               selectedSourceName={
                 selectedSourceId ? sourceById.get(selectedSourceId)?.name ?? null : null
               }
               proposal={proposal}
               chatLog={chatLog}
+              provider={aiProvider}
+              onProviderChange={setAiProvider}
+              providersAvailable={{
+                codex: env?.codexFound ?? false,
+                gemini: env?.geminiFound ?? false,
+                claude: env?.claudeFound ?? false
+              }}
               visionMode={visionMode}
               onVisionModeChange={setVisionMode}
+              useAudio={useAudio}
+              onUseAudioChange={setUseAudio}
+              whisperFound={env?.whisperFound ?? false}
               onHighlight={runHighlight}
               onChat={runChat}
               onAccept={acceptProposal}
@@ -601,6 +688,7 @@ export default function App(): JSX.Element {
           setPxPerSec={setPxPerSec}
           snapEnabled={snapEnabled}
           selectedClipIds={selectedClipIds}
+          changedClipIds={highlightChangedIds}
           playheadSec={player.playheadSec}
           draggingSourceId={draggingSourceId}
           onSelectClip={selectClip}

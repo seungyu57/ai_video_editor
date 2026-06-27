@@ -6,12 +6,14 @@ export function SourceBin({
   busy,
   selectedSourceId,
   onPick,
+  onRemoveSource,
   onDragSource
 }: {
   sources: SourceClip[]
   busy: boolean
   selectedSourceId: string | null
   onPick: (s: SourceClip) => void
+  onRemoveSource: (id: string) => void
   onDragSource: (id: string | null) => void
 }): JSX.Element {
   return (
@@ -47,6 +49,17 @@ export function SourceBin({
                 {fmtClock(s.durationSec)} · {s.resolution || '메타 없음'}
               </div>
             </div>
+            <button
+              className="bin-del"
+              title="이 미디어 제거(원본 파일은 안 지움)"
+              onClick={(e) => {
+                e.stopPropagation()
+                onRemoveSource(s.id)
+              }}
+              onDragStart={(e) => e.preventDefault()}
+            >
+              ✕
+            </button>
           </li>
         ))}
       </ul>

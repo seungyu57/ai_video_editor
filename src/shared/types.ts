@@ -86,12 +86,20 @@ export interface Project {
   filePath?: string
 }
 
-/** 환경 점검 결과 (ffmpeg/codex 존재 여부). */
+/** 환경 점검 결과 (ffmpeg/AI CLI/whisper 존재 여부). */
 export interface EnvStatus {
   ffmpegPath: string | null
   ffprobePath: string | null
   ffmpegOk: boolean
   codexFound: boolean
+  /** Gemini CLI 존재 여부(설치 기준 — 실행 시 인증이 필요할 수 있음). */
+  geminiFound: boolean
+  /** Claude CLI 존재 여부. */
+  claudeFound: boolean
+  /** 음성 전사(Whisper) CLI 존재 여부 — 음성 기반 하이라이트에 사용. */
+  whisperFound: boolean
+  /** 감지된 whisper 실행 명령(없으면 null). */
+  whisperCmd: string | null
 }
 
 export function defaultTracks(): Track[] {

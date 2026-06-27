@@ -23,6 +23,8 @@ export interface TimelinePanelProps {
   setPxPerSec: (v: number | ((p: number) => number)) => void
   snapEnabled: boolean
   selectedClipIds: Set<string>
+  /** AI 제안에서 바뀐 클립 id(편집본 미리보기 시 강조). */
+  changedClipIds?: string[]
   playheadSec: number
   draggingSourceId: string | null
   onSelectClip: (id: string | null, additive?: boolean) => void
@@ -67,7 +69,7 @@ type Gesture = MoveGesture | TrimGesture | ScrubGesture | null
 export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
   const {
     tracks, clips, sources, fps, pxPerSec, setPxPerSec, snapEnabled,
-    selectedClipIds, playheadSec, draggingSourceId,
+    selectedClipIds, changedClipIds, playheadSec, draggingSourceId,
     onSelectClip, onSplitPlayhead, onRemoveClip, onRippleDeleteClip, onSetClipSpeed, onUnlinkClip,
     onLinkSelected, onSeek, onShowFrame, onMoveClip, onMoveClips, onTrimLeft, onTrimRight,
     onCloseGap, onAddSource, onToggleSnap, onAddTrack, onMoveTrack, onRemoveTrack, onReorderTrack, onSetTrackFlag
@@ -138,7 +140,7 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
       const rect = el.getBoundingClientRect()
       const offsetX = e.clientX - rect.left
       const time = (offsetX + el.scrollLeft) / pxPerSec
-      const next = Math.max(5, Math.min(500, pxPerSec * (e.deltaY < 0 ? 1.15 : 0.87)))
+      const next = Math.max(0.5, Math.min(500, pxPerSec * (e.deltaY < 0 ? 1.15 : 0.87)))
       pendingZoomRef.current = { time, offsetX }
       setPxPerSec(next)
     } else {
@@ -148,7 +150,7 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
   function fitZoom(): void {
     const el = scrollRef.current
     if (!el || total <= 0) return
-    setPxPerSec(Math.max(5, Math.min(500, (el.clientWidth - 20) / total)))
+    setPxPerSec(Math.max(0.5, Math.min(500, (el.clientWidth - 20) / total)))
   }
 
   // ── 제스처 시작 ──
@@ -333,7 +335,7 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
           </button>
         </div>
         <div className="tl-zoom">
-          <button onClick={() => setPxPerSec((p) => Math.max(5, p * 0.8))} title="축소(-)">−</button>
+          <button onClick={() => setPxPerSec((p) => Math.max(0.5, p * 0.8))} title="축소(-)">−</button>
           <button onClick={fitZoom} title="맞춤">맞춤</button>
           <button onClick={() => setPxPerSec((p) => Math.min(500, p * 1.25))} title="확대(+)">＋</button>
           <span className="sep" />
@@ -430,12 +432,13 @@ export function TimelinePanel(props: TimelinePanelProps): JSX.Element {
                     const startSec = isTrimming ? trim!.left : clip.startSec
                     const dur = isTrimming ? trim!.right - trim!.left : timelineDur(clip)
                     const selected = selectedClipIds.has(clip.id)
+                    const changed = changedClipIds?.includes(clip.id)
                     const w = Math.max(2, dur * pxPerSec)
                     const src = sourceById.get(clip.sourceId)
                     return (
                       <div
                         key={clip.id}
-                        className={`tl-clip${track.kind === 'audio' ? ' audio' : ''}${selected ? ' selected' : ''}${clip.origin === 'ai' ? ' ai' : ''}${isDragSource ? ' drag-source' : ''}`}
+                        className={`tl-clip${track.kind === 'audio' ? ' audio' : ''}${selected ? ' selected' : ''}${clip.origin === 'ai' ? ' ai' : ''}${changed ? ' changed' : ''}${isDragSource ? ' drag-source' : ''}`}
                         style={{ left: startSec * pxPerSec, width: w }}
                         onPointerDown={(e) => startMove(e, clip)}
                         onContextMenu={(e) => {

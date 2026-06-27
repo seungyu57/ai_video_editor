@@ -137,6 +137,8 @@ export interface Proposal {
   title: string
   summary: string
   preview: { tracks: Track[]; clips: TimelineClip[] }
+  /** "원본" 비교 시 보여줄 스냅샷(미지정이면 적용 직전 타임라인). 하이라이트는 전체 원본 영상. */
+  before?: { tracks: Track[]; clips: TimelineClip[] }
   changedIds: string[]
   explanation?: string
 }
@@ -184,20 +186,29 @@ export interface HighlightSegment {
   reason?: string
 }
 
-/** 비전 자동 하이라이트 요청(codex 가 프레임을 직접 분석). */
+/** 사용할 AI 백엔드. codex=ChatGPT로그인, gemini=구글, claude=Anthropic. */
+export type AiProvider = 'codex' | 'gemini' | 'claude'
+
+/** AI 자동 하이라이트 요청(비전 + 선택적 음성 전사 융합). */
 export interface VisionHighlightRequest {
   sourcePath: string
   durationSec: number
+  /** 분석에 쓸 AI. */
+  provider: AiProvider
   /** fast=듬성듬성(빠름·저쿼터), precise=촘촘(정확·고쿼터). */
   mode: 'fast' | 'precise'
+  /** 음성 전사(Whisper)도 분석에 포함할지. whisper 미설치면 무시(화면만). */
+  useAudio: boolean
+  /** env:check 가 알려준 whisper 실행 명령(없으면 null). */
+  whisperCmd: string | null
   maxClips: number
   preRollSec: number
   postRollSec: number
 }
 
-/** 비전 분석 진행 상황(렌더러 표시용). */
+/** 분석 진행 상황(렌더러 표시용). */
 export interface VisionProgress {
-  stage: 'extract' | 'analyze' | 'done'
+  stage: 'transcribe' | 'extract' | 'analyze' | 'fuse' | 'done'
   current: number
   total: number
   message: string
@@ -214,6 +225,8 @@ export interface ChatClipInfo {
 export interface ChatEditRequest {
   instruction: string
   clips: ChatClipInfo[]
+  /** 사용할 AI(기본 codex). */
+  provider?: AiProvider
 }
 export interface ChatEditResult {
   ops: EditOp[]
